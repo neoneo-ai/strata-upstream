@@ -13,6 +13,7 @@ UI 看门狗能把卡住的线程现场写进日志、点击路径不经过 js_a
 from __future__ import annotations
 
 import io
+import re
 import sys
 import tempfile
 import threading
@@ -341,8 +342,9 @@ class TestAppJsTopLevelWiring(unittest.TestCase):
     """
 
     TOP_LEVEL = ("function render(", "async function poll(", "function ensureFrame(",
-                 "function num(", "async function loadModels(", "async function loadLog(",
-                 "async function loadConfig(", "function pill(", "function note(")
+                 "function num(", "function count(", "async function loadModels(",
+                 "async function loadLog(", "async function loadConfig(", "function pill(",
+                 "function note(")
 
     def setUp(self):
         self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
@@ -374,6 +376,114 @@ class TestAppJsTopLevelWiring(unittest.TestCase):
         for route in ("/neo/status", "/neo/models", "/neo/log", "/neo/config",
                       "/neo/open", "/neo/open-log"):
             self.assertIn(route, self.js, f"页面少了 {route}")
+
+
+class TestStatusPageMetricCards(unittest.TestCase):
+    """状态页六张卡片只写数字，列表与对象一律不许进文字。
+
+    实测 2026-10-12 用户的窗口截图：五张卡片是"—"，"上下文"有数，"请求"那一栏写的是
+    "请求 [object Object],[object Object]" —— 那是 /metrics 顶层的 requests（最近 12 条
+    请求的记录列表）被模板串直接写进了文字。页面这一层的规矩：卡片只经过 num() / count()。
+    """
+
+    CARDS = ("m-toks", "m-step", "m-vram", "m-vram-s", "m-ram", "m-ram-s",
+             "m-active", "m-queued", "m-reqs")
+    ASSIGN = re.compile(r'\$\("(m-[a-z-]+)"\)\.textContent = ')
+    # 这些键可能是列表/对象（requests 就是最近 12 条请求的记录），不许原样嵌进文字
+    RAW = re.compile(r"\$\{\s*m\.(requests|requests_kept|active|queued|tokens_per_s|tokens_per_s_mean"
+                     r"|decode_step_ms|gpu_used_mib|gpu_total_mib|gpu_free_mib|ram_used_gb|ram_total_gb)\b")
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.lines = self.js.splitlines()
+
+    def test_every_metric_card_is_rendered_through_a_number_guard(self):
+        seen = set()
+        k = 0
+        while k < len(self.lines):
+            got = self.ASSIGN.match(self.lines[k].strip())
+            if not got or got.group(1) not in self.CARDS:
+                k += 1
+                continue
+            stmt = self.lines[k].strip()
+            while not stmt.rstrip().endswith(";") and k + 1 < len(self.lines):
+                k += 1
+                stmt += " " + self.lines[k].strip()      # 一条赋值写在多行上
+            seen.add(got.group(1))
+            rhs = stmt.split("= ", 1)[1]
+            self.assertTrue(re.search(r"\b(num|count)\(", rhs),
+                            f"第 {k + 1} 行把指标原样写进文字：{stmt}")
+            self.assertIsNone(self.RAW.search(rhs),
+                              f"第 {k + 1} 行把 m.<指标> 直接嵌进模板串，列表会写成 [object Object]：{stmt}")
+            k += 1
+        self.assertEqual(seen, set(self.CARDS), "每张卡片都要有渲染处")
+
+    def test_count_guard_rejects_objects_and_lists(self):
+        body = re.search(r"function count\(v\) \{.*?\n\}", self.js, re.S)
+        self.assertTrue(body, "app.js 里没有 count()")
+        self.assertIn('typeof v === "object"', body.group(0),
+                      "列表与对象要挡掉：Number([]) 是 0，Number([5]) 是 5，挡不住就把列表写进文字")
+
+    def test_status_page_has_the_six_cards(self):
+        html = (ROOT / "neo" / "web" / "index.html").read_text(encoding="utf-8")
+        for card in self.CARDS:
+            self.assertIn(f'id="{card}"', html, f"状态页少了 #{card}")
+
+
+class TestHeaderActionButtons(unittest.TestCase):
+    """右上角的按钮要说清"此刻能按的是哪个"。
+
+    实测 2026-10-12（Edge 无头截图 1500x120，`/neo/status` 是 state=running、loaded=true）：
+    状态胶囊"运行中"、服务表"运行中·模型已就绪"，可右上角是**启动**亮着蓝色主按钮、
+    **停止** 是灰的 —— `style.css` 里根本没有 `:disabled`，禁用一点看不出来，
+    `primary` 又写死在"启动"上。用户的话：模型已经启动，应该是停止。
+    """
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.css = (ROOT / "neo" / "web" / "style.css").read_text(encoding="utf-8")
+
+    def test_css_shows_the_disabled_state(self):
+        self.assertIn("button:disabled", self.css, "禁用要在样式上看得出来")
+        self.assertIn("button.primary:disabled", self.css, "被禁用的主按钮不许留蓝色")
+        self.assertIn("not-allowed", self.css)
+
+    def test_primary_follows_the_actionable_button(self):
+        for btn in ("btn-start", "btn-stop", "btn-retry"):
+            self.assertIn(f'$("{btn}").classList.toggle("primary"', self.js,
+                          f"{btn} 的蓝色没跟着「此刻能按的那个」走")
+
+    def test_stop_is_enabled_while_the_service_is_up(self):
+        line = [ln for ln in self.js.splitlines() if '$("btn-stop").disabled =' in ln]
+        self.assertTrue(line, "app.js 里没有 btn-stop 的禁用判断")
+        for state in ('"running"', '"external"', '"restarting"', '"stopping"'):
+            self.assertNotIn(state, line[0], f"服务在跑（{state}）时「停止」必须是能按的")
+
+
+class TestModelPageSwitch(unittest.TestCase):
+    """模型页的"启动它"：服务在跑时点它是换模型，按钮要说清它先停谁。
+
+    `supervisor.set_model`（neo/supervisor.py:156）就是 `stop()` + `start()` —— 用户不用先按
+    停止，代价是正在跑的请求会被切断。实测 2026-10-12：按钮以前只写"启动它"，跑着的时候
+    和停着的时候长得一模一样，看不出点下去会发生什么。
+    """
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+
+    def test_switch_button_is_labelled_as_a_switch(self):
+        self.assertIn('btn.textContent = cur ? "正在用" : (busy ? "换过去" : "启动它")', self.js)
+
+    def test_switch_button_says_what_it_stops_first(self):
+        self.assertIn("btn.title", self.js)
+        self.assertIn("会先停掉当前服务", self.js)
+
+    def test_current_and_missing_model_buttons_stay_disabled(self):
+        self.assertIn("btn.disabled = cur || !m.installed", self.js)
+
+    def test_busy_covers_every_running_state(self):
+        for state in ('"running"', '"starting"', '"stopping"', '"restarting"', '"external"'):
+            self.assertIn(state, self.js, f"busy 的判断里少了 {state}")
 
 
 class TestBuildNeedsPywebview(unittest.TestCase):

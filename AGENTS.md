@@ -32,7 +32,7 @@ its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one win
 without it, because the exe would silently lose its window and open only a browser page; the exe is meant to sit in a
 Strata root directory and uses that directory as its root. Its tests need no GPU: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
-neo.tests.test_logging neo.tests.test_ui` (96 tests, 143.1 s on Windows / Python 3.13, using
+neo.tests.test_logging neo.tests.test_ui` (118 tests, 150.1 s on Windows 11 / Python 3.13, using
 `serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 ## Contributing a change or report

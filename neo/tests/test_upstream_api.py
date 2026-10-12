@@ -39,6 +39,27 @@ class TestServerApi(unittest.TestCase):
     def test_metrics_endpoint_exists(self):
         self.assertIn('path == "/metrics"', self.src)
 
+    def test_metrics_sections_neo_flattens_still_exist(self):
+        """Neo 的状态页卡片读 /metrics 的这四节（neo/engines/base.py 的 flatten_metrics）。
+
+        上游改了这些名字，这条要第一时间响。2026-10-12 那次是反过来的：Neo 按 41 个上游
+        从没发过的扁平键读顶层，六张卡片全是"—"、"请求"栏写成 [object Object]。
+        """
+        block = re.search(r"def metrics\(self, all_requests=False\).*?\n    def ", self.src, re.S)
+        self.assertTrue(block, "找不到 Service.metrics()")
+        body = block.group(0)
+        for key in ('"live"', '"totals"', '"hardware"', '"hardware_static"',
+                    '"requests_kept"', '"queued"', '"tok_s"', '"tok_s_mean"',
+                    '"prompt_tokens"', '"generated"', "running=", '"phase"'):
+            self.assertIn(key, body, f"/metrics 不再返回 {key}，Neo 的 flatten_metrics 要跟着改")
+
+    def test_totals_and_hardware_keys_neo_reads(self):
+        for key in ('"requests"', '"output_tokens"', '"decode_ms"', '"prompt_ms"'):
+            self.assertIn(key, self.src, f"serve/server.py 的 totals 里不再出现 {key}")
+        tel = text(ROOT / "serve" / "telemetry.py")
+        for key in ('"cpu"', '"ram_used"', '"ram_total"', '"mem_used"', '"mem_total"', '"util"'):
+            self.assertIn(key, tel, f"serve/telemetry.py 不再产出 {key}")
+
     def test_web_pages_neo_embeds(self):
         self.assertTrue((ROOT / "serve" / "web" / "index.html").is_file())
         self.assertTrue((ROOT / "serve" / "web" / "monitor.html").is_file())

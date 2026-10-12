@@ -45,6 +45,11 @@ button {
 }
 button:hover { border-color: #3a4250; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 600; }
+/* 禁用要看得出来：以前 CSS 里没有 :disabled，被禁用的"启动"照样是亮蓝主按钮，
+   服务已经跑着时页面读起来像"该点启动"（实测 2026-10-12，state=running loaded=true）。
+   主按钮的蓝色跟着"此刻能按的那个"走（app.js 里 toggle），禁用的那个一律是灰的。 */
+button:disabled { opacity: .42; cursor: not-allowed; }
+button.primary:disabled { background: var(--bg3); border-color: var(--line); color: var(--muted); font-weight: 400; }
 button.hidden, .hidden { display: none; }
 .muted { color: var(--muted); }
 .path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }

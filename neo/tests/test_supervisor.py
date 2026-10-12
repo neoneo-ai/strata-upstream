@@ -127,6 +127,29 @@ class TestStartAndReady(SupervisorBase):
         self.assertTrue(Path(s["log_path"]).exists())
         self.assertIn("ready", state.tail_text(s["log_path"], 20000))   # 上游的就绪行进了日志
 
+    def test_status_metrics_are_numbers(self):
+        """状态页卡片读到的 metrics 要真是数字（真进程，mock 引擎）。
+
+        实测 2026-10-12 用户的截图：五张卡片"—"、"请求 [object Object],[object Object]"。
+        这条盯的就是那一层：值里不许有列表/对象，requests 是累计条数。
+        """
+        sup = self.make()
+        sup.start()
+        s = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="服务就绪")
+        m = s["metrics"]
+        self.assertIsInstance(m, dict)
+        self.assertEqual(m.get("active"), 0, "没有请求在跑")
+        self.assertEqual(m.get("queued"), 0)
+        self.assertIsInstance(m.get("requests"), int, "requests 是累计条数，不是请求记录列表")
+        for key, value in m.items():
+            self.assertNotIsInstance(value, (list, dict),
+                                     f"卡片会把它写成 [object Object]：{key}={value!r}")
+        if "gpu_used_mib" in m:
+            self.assertGreater(m["gpu_used_mib"], 0)
+        if "ram_total_gb" in m:
+            self.assertGreater(m["ram_total_gb"], 0.0)
+        self.assertNotIn("tokens_per_s", m, "空闲时不编一个生成速度出来")
+
     def test_events_recorded(self):
         sup = self.make()
         sup.start()
@@ -134,6 +157,27 @@ class TestStartAndReady(SupervisorBase):
         texts = " ".join(e["text"] for e in sup.status()["events"])
         self.assertIn("启动", texts)
         self.assertIn("就绪", texts)
+
+
+class TestSetModel(SupervisorBase):
+    """模型页的"换过去"：服务在跑时直接换模型，用户不用先按停止。
+
+    `set_model`（neo/supervisor.py:156）就是"记下新模型 + `stop()` + `start()`"。
+    实测 2026-10-12（mock 真进程）：running 时点它，Neo 自己把服务停掉、用新模型重新起，
+    进程号换了、状态回到 running，而且这一下不算崩溃重启（不占退避、不会推熔断）。
+    """
+
+    def test_set_model_while_running_restarts_on_its_own(self):
+        sup = self.make()
+        sup.start()
+        first = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="先跑起来")
+        out = sup.set_model("mock-b")
+        self.assertEqual(sup.model_id, "mock-b", "新模型要记下来")
+        self.assertIn(out["state"], (STARTING, RUNNING), "点下去就进了换模型的流程")
+        again = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="换完模型重新就绪")
+        self.assertNotEqual(first["pid"], again["pid"], "服务真的换了一个进程")
+        self.assertEqual(again["restart_number"], 0, "用户主动换模型不算崩溃重启")
+        self.assertEqual(again["restarts"], [], "换模型不占退避的次数")
 
 
 class TestCrashRestart(SupervisorBase):

@@ -61,22 +61,92 @@ def http_json(port: int, path: str, timeout: float = 4.0, api_key: str = ""):
         return None
 
 
-#: 状态页与监控页要展示的 /metrics 字段（名字与 serve/server.py 的 /metrics 一致）
-METRIC_KEYS = ("active", "queued", "requests", "requests_per_s", "prompt_tokens", "generated_tokens",
-               "tokens_per_s", "tokens_per_s_mean", "decode_step_ms", "decode_step_ms_mean",
-               "decode_step_ms_max", "decode_step_ms_p95", "decode_tokens", "decode_window",
-               "decode_window_tokens", "decode_window_tokens_per_s", "decode_window_ms",
-               "decode_window_preferred_ms", "decode_window_target_ms", "decode_window_mode",
-               "decode_window_adaptive", "decode_window_adaptive_reason", "decode_window_adaptive_note",
-               "decode_window_adaptive_applied", "decode_window_adaptive_applied_ms",
-               "decode_window_adaptive_applied_note", "decode_window_adaptive_candidate_ms",
-               "decode_window_adaptive_candidate_note", "decode_window_adaptive_candidate_reason",
-               "decode_window_adaptive_candidate_applied", "decode_window_adaptive_candidate_applied_ms",
-               "decode_window_adaptive_candidate_applied_note", "decode_window_adaptive_candidate",
-               "decode_window_adaptive_candidate_target_ms", "decode_window_adaptive_candidate_target",
-               "decode_window_adaptive_candidate_target_applied",
-               "decode_window_adaptive_candidate_target_applied_ms", "gpu_index", "gpu_name",
-               "gpu_total_mib", "gpu_used_mib", "gpu_free_mib", "cpu_pct", "ram_used_gb", "ram_total_gb")
+#: /metrics 的四节，实测 2026-10-12 在本机（RTX 5090 D v2，serve/server.py --engine mock，端口 28181）：
+#:     live             当前请求：state / queued / phase / prompt_tokens / generated / tok_s / tok_s_mean
+#:                      （--batch 时另有 running / slots / waiting）
+#:     totals           累计：requests / prompt_tokens / reused / output_tokens / prompt_ms / decode_ms
+#:     hardware         每秒一采：gpu_util、gpu_mem_used、gpu_mem_total（字节）、gpu_temp、gpu_power、
+#:                      cpu（百分比）、ram_used、ram_total（字节）、disk_read_mb、disk_write_mb
+#:     hardware_static  gpu_name / gpu_count / gpu_note / cpu_name / cores / threads
+#: 顶层的 requests 是最近 12 条请求的**记录列表**（每项一个对象），不是数字。
+#: Neo 早先按一套扁平键（tokens_per_s / decode_step_ms / gpu_used_mib / ram_used_gb …共 41 个）
+#: 在顶层挑，那些名字上游一个都没发过，只有 requests 在、且它是列表：状态页六张卡片全是"—"，
+#: "请求"那一栏把列表直接写进文字，成了"请求 [object Object],[object Object]"
+#: （用户 2026-10-12 的窗口截图，本机复现见 NEO_DESKTOP.md）。下面按真实的形状取值。
+METRIC_SECTIONS = ("live", "totals", "hardware", "hardware_static")
+MIB = 2 ** 20
+GB = 2 ** 30
+
+
+def metric_num(v):
+    """只认 int/float，别的一律 None（None、True/False、文字、列表、对象、NaN）。"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    return None if f != f else f
+
+
+def flatten_metrics(metrics) -> dict:
+    """把 /metrics 的四节压成状态页卡片要的那几个扁平键。上游没有的键就不出现，页面显示"—"。"""
+
+    def section(name):
+        got = metrics.get(name) if isinstance(metrics, dict) else None
+        return got if isinstance(got, dict) else {}
+
+    metrics = metrics if isinstance(metrics, dict) else {}
+    live, totals, hw, static = (section("live"), section("totals"),
+                                section("hardware"), section("hardware_static"))
+    out: dict = {}
+
+    def put(key, value, digits=None, integer=False):
+        n = metric_num(value)
+        if n is None:
+            return
+        out[key] = int(round(n)) if integer else (round(n, digits) if digits is not None else n)
+
+    def put_str(key, value):
+        if isinstance(value, str) and value:
+            out[key] = value
+
+    # 在跑的请求：--batch 时 live.running 是正在跑的请求数；单路时看 live.state 在不在跑
+    running = metric_num(live.get("running"))
+    out["active"] = int(running) if running is not None else (
+        1 if str(live.get("state") or "") in ("reading", "generating") else 0)
+    put("queued", live.get("queued"), integer=True)
+    put("requests", totals.get("requests"), integer=True)      # 累计条数，不是那 12 条记录
+    put("requests_kept", metrics.get("requests_kept"), integer=True)
+    put("tokens_per_s", live.get("tok_s"), digits=1)
+    put("tokens_per_s_mean", live.get("tok_s_mean"), digits=1)
+    put("prefill_tok_s_mean", live.get("prefill_tok_s_mean"), digits=1)
+    # 解码步长：整段解码时间除以生成的 token 数（totals 里的 decode_ms 单位是毫秒）
+    decode_ms, gen = metric_num(totals.get("decode_ms")), metric_num(totals.get("output_tokens"))
+    if decode_ms is not None and gen is not None and gen > 0:
+        out["decode_step_ms"] = round(decode_ms / gen, 2)
+    gpu_used, gpu_total = metric_num(hw.get("gpu_mem_used")), metric_num(hw.get("gpu_mem_total"))
+    put("gpu_used_mib", None if gpu_used is None else gpu_used / MIB, integer=True)
+    put("gpu_total_mib", None if gpu_total is None else gpu_total / MIB, integer=True)
+    if gpu_used is not None and gpu_total is not None:
+        out["gpu_free_mib"] = int(round((gpu_total - gpu_used) / MIB))
+    put("gpu_util", hw.get("gpu_util"), digits=1)
+    put("gpu_temp", hw.get("gpu_temp"), digits=1)
+    put("gpu_power", hw.get("gpu_power"), digits=1)
+    put("cpu_pct", hw.get("cpu"), digits=1)
+    put("disk_read_mb", hw.get("disk_read_mb"), digits=1)
+    put("disk_write_mb", hw.get("disk_write_mb"), digits=1)
+    put("ram_used_gb", None if metric_num(hw.get("ram_used")) is None
+        else metric_num(hw.get("ram_used")) / GB, digits=1)
+    put("ram_total_gb", None if metric_num(hw.get("ram_total")) is None
+        else metric_num(hw.get("ram_total")) / GB, digits=1)
+    put_str("gpu_name", static.get("gpu_name"))
+    put_str("gpu_note", static.get("gpu_note"))
+    put("gpu_count", static.get("gpu_count"), integer=True)
+    # 当前请求的现场
+    put_str("phase", live.get("phase"))
+    put_str("live_state", live.get("state"))
+    put("prompt_tokens", live.get("prompt_tokens"), integer=True)
+    put("generated", live.get("generated"), integer=True)
+    put("elapsed_s", live.get("elapsed_s"), digits=1)
+    return out
 
 
 class EngineAdapter:
@@ -130,7 +200,7 @@ class EngineAdapter:
                        max_context=int(health.get("max_context") or 0))
         metrics = http_json(port, "/metrics", api_key=api_key)
         if isinstance(metrics, dict):
-            out["metrics"] = {k: metrics.get(k) for k in METRIC_KEYS if k in metrics}
+            out["metrics"] = flatten_metrics(metrics)
         return out
 
     # ---- 端口与日志（状态页与日志页要用，不依赖启动计划成不成功）----

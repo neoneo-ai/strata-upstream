@@ -74,7 +74,7 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 77 个测试（见下） |
+| `neo/tests/` | 118 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -266,6 +266,88 @@ null，`ensureFrame()` 直接 return，两个内嵌框的 `src` 就停在 `about
 `num` 在顶层，文件末尾的 `poll();` 与 `setInterval(poll, 2000);` 在顶层，花括号配平。
 把 `num()` 的闭合去掉，这几条立刻红。
 
+## 状态页的卡片全是"—"、请求栏写成 [object Object]（已修）
+
+用户 2026-10-12 的窗口截图：服务在跑（状态胶囊"运行中"、上下文 202,072），六张卡片里
+**生成速度 / 解码步长 / 显存 / 内存 / 在跑的请求**五张是"—"，"上下文"那张的副标题写的是
+"请求 [object Object],[object Object]"。
+
+实测 2026-10-12 在本机（RTX 5090 D v2 / Windows 11 / Python 3.13.15，
+`serve/server.py --engine mock --port 28181`，跑过一次 `/v1/chat/completions` 后取）：
+`/metrics` 的顶层只有 `engine`、`live`、`requests`、`requests_kept`、`totals`、`hardware`、
+`hardware_static`、`history`、`time` 九个键，卡片要的数字全在节里 ——
+
+| 节 | 里面有什么 |
+| --- | --- |
+| `live` | 当前请求：`state`、`queued`、`phase`、`prompt_tokens`、`generated`、`tok_s`、`tok_s_mean`（`--batch` 时另有 `running`、`slots`、`waiting`） |
+| `totals` | 累计：`requests`、`prompt_tokens`、`reused`、`output_tokens`、`prompt_ms`、`decode_ms` |
+| `hardware` | 每秒一采：`gpu_util`、`gpu_mem_used`、`gpu_mem_total`（字节）、`gpu_temp`、`gpu_power`、`cpu`（百分比）、`ram_used`、`ram_total`（字节）、`disk_read_mb`、`disk_write_mb` |
+| `hardware_static` | `gpu_name`、`gpu_count`、`gpu_note`、`cpu_name`、`cores`、`threads` |
+
+而 `neo/engines/base.py` 以前按 41 个扁平键（`tokens_per_s`、`decode_step_ms`、`gpu_used_mib`、
+`ram_used_gb` …）在**顶层**挑：这些名字上游一个都没发过，卡片要的键里只有 `requests` 在，
+而它是最近 12 条请求的**记录列表** —— 列表被模板串写进文字就是 `[object Object],[object Object]`。
+
+修法两层：`base.py` 的 `flatten_metrics()` 按真实的节取值并换算单位（字节 → MiB / GB、
+`decode_ms / output_tokens` → ms/步、`live.running` 或 `live.state` → 在跑的请求数），
+上游没有的键就不出现，页面显示"—"；`app.js` 的卡片一律经过 `num()` / `count()`，
+`count()` 对列表与对象回"—"，页面这一层也写不出 `[object Object]`。
+
+修完实测（`python -m neo.console_server mock 28190`，Edge 无头截图 1500x420）：显存
+**24079 / 24455 MiB · NVIDIA GeForce RTX 5090 D v2**、内存 **70.4 / 93.6 GB**、在跑的请求
+**0**（排队 0）、上下文 **32,768**、请求 **0**；生成速度与解码步长在空闲时是"—" ——
+没有请求在生成，不编一个 0 出来。
+
+回归测试：`test_engines.py` 的 `TestMetricsFlatten`（8 个，吃的是上面那次真应答的载荷）、
+`test_supervisor.py` 的 `test_status_metrics_are_numbers`（真进程，值里不许有列表/对象）、
+`test_upstream_api.py` 的 `test_metrics_sections_neo_flattens_still_exist`（上游改名先响）、
+`test_ui.py` 的 `TestStatusPageMetricCards`（卡片只经过 `num()` / `count()`，`m.requests`
+这类不许直接嵌进模板串）。
+
+## 服务在跑，右上角亮的却是「启动」（已修）
+
+用户的话：模型已经启动了，应该是停止。截图里状态胶囊是"运行中"、服务表写"运行中·模型已就绪"，
+右上角三个按钮里 **启动是亮蓝色主按钮、停止是灰的**。
+
+实测 2026-10-12（`python -m neo.console_server mock 28210`，Edge 无头截图 1500x120，
+`/neo/status` 回 `state=running`、`healthy=true`、`loaded=true`）：
+
+- `neo/web/style.css` 里**一条 `:disabled` 样式都没有** —— 按钮被禁用后长得跟能按时一模一样，
+  而 `button.primary` 的蓝色写死在"启动"上（`index.html` 里带的 class，页面从不换），
+  于是运行中的页面读起来就是"该点启动"。
+- 禁用判断本身是对的（`btn-start` 在 running/starting 时禁用，`btn-stop` 只在 idle 与 halted 时禁用），
+  纯样式问题。
+
+修法：主按钮的蓝色跟着"此刻能按的那个"走 —— `app.js` 的 `render()` 里
+`running / starting / stopping / restarting / external` 时点亮**停止**，停着时点亮**启动**，
+熔断时点亮**重试**；`style.css` 补 `button:disabled`（`opacity .42` + `not-allowed`）与
+`button.primary:disabled`（退回灰底、灰字），禁用一眼看得出来。
+
+修完实测（同一探针、同一截图尺寸）：`state=running` 时右上角是**停止**亮蓝、**启动**发灰。
+
+回归测试：`test_ui.py` 的 `TestHeaderActionButtons`（3 个）—— CSS 里要有 `button:disabled` 与
+`button.primary:disabled`；`btn-start` / `btn-stop` / `btn-retry` 三个都要 `toggle("primary")`；
+`btn-stop` 的禁用条件里不许出现 `running` / `external` / `restarting` / `stopping`（在跑就该能停）。
+
+## 模型页的"启动它"：跑着的时候点它会发生什么
+
+用户问：模型列表里的"启动它"，是不是要等服务停止了才能按？
+
+**不用先停。** `set_model`（`neo/supervisor.py:156`）就是"记下新模型 + `stop()` + `start()`"——
+Neo 自己把当前服务停掉、用新模型重新起。实测 2026-10-12（mock 真进程，
+`neo/tests/test_supervisor.py` 的 `TestSetModel`）：running 时调用它，进程号换了、状态回到
+running，`restart_number` 仍是 0 —— 用户主动换模型不占退避次数、不推熔断。
+
+代价是**正在跑的请求会被切断**（`stop()` 给完优雅退出窗口就杀整个子进程树）。以前按钮只写
+"启动它"，跑着和停着长得一模一样，看不出点下去会发生什么。现在写清楚：
+
+- 当前模型：按钮"正在用"，禁用；
+- 服务在跑（running / starting / stopping / restarting / external）：按钮"换过去"，
+  鼠标上去是"会先停掉当前服务（正在跑的请求会被切断），再用「模型名」重新起"；
+- 停着：按钮"启动它"，提示"用「模型名」起服务"；模型文件不在的一律禁用。
+
+回归测试：`test_ui.py` 的 `TestModelPageSwitch`（4 个）与 `test_supervisor.py` 的 `TestSetModel`（1 个）。
+
 ## 打成 exe（`NeoStrata.exe`）
 
 ```
@@ -315,32 +397,38 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 ```
 
-77 个测试，39.9 秒（Windows，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 19 个共 5.2 秒，其余 55 个 34.7 秒）：
+118 个测试，150.1 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 29 个共 6.1 秒，其余 67 个 144.0 秒）：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
-  10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词。
+  10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、
+  **状态页的 metrics 真是数字**（真进程：`requests` 是累计条数，值里不许有列表/对象）。
 - `test_engines`：配置发现与排序（`setup.py` 的 `touch()` 语义）、启动命令只用上游已有参数、
   模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器；**真实配置的形状**（扁平 `args`、模型在
   `--native`、上下文在 `--max-context`、没有 `path` 键）、**模型在而引擎 exe 不在要标出来并拒绝启动**、
-  没点名时挑一个能启动的配置。
+  没点名时挑一个能启动的配置；**`/metrics` 的四节压成卡片键**（`TestMetricsFlatten` 吃真应答载荷：
+  显存 24028 / 24455 MiB、内存 70.6 / 93.6 GB、`requests` 是 1 不是列表、空闲时不编一个生成速度）。
 - `test_upstream_api`：Neo 用到的 `serve/server.py` 参数（`--engine/--config/--port/--host/
-  --api-key/--gpu`）、`/health` 的字段、`/metrics`、聊天页与监控页文件、`setup.py` 的 M2 参数、
+  --api-key/--gpu`）、`/health` 的字段、`/metrics` 的**四节与里面的键**（`live` / `totals` /
+  `hardware` / `hardware_static`，以及 `serve/telemetry.py` 的 `cpu` / `ram_used` / `mem_used`）、
+  聊天页与监控页文件、`setup.py` 的 M2 参数、
   上游 `requirements.txt` 未被改动。上游改名时这条测试会先响，而不是等用户的 Neo 起不来。
 - `test_console`：状态接口、静态页 no-store、起不来的引擎停在 halted、外站 Origin 与外站 Host 403、
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
   浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
-- `test_ui`（19 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+- `test_ui`（22 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
   `window_kwargs()` 里没有 `js_api`（有坐标才写 `x`/`y`）、`app.js` 代码里不出现
   `window.pywebview` 且带 `/neo/open`、`/neo/open-log` 两条路由；**`app.js` 的花括号配平且
-  `render`/`poll`/`ensureFrame`/`num` 在顶层、末尾的 `poll();` 与 `setInterval(poll, 2000);`
-  在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**打包环境缺 pywebview 时
+  `render`/`poll`/`ensureFrame`/`num`/`count` 在顶层、末尾的 `poll();` 与 `setInterval(poll, 2000);`
+  在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**状态页六张卡片只经过
+  `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
+  **打包环境缺 pywebview 时
   `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`。
-- `test_logging`（18 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
+- `test_logging`（22 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
   输出有界、说明折叠与丢弃了多少、正常输出不被改；`clean_line` 行为、`install()` 幂等；
   `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；

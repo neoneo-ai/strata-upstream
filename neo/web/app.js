@@ -74,6 +74,14 @@ function num(v, digits = 1) {
   return (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(digits).replace(/\.0$/, "");
 }
 
+// 整数计数。列表与对象一律 "—"：/metrics 顶层的 requests 是最近 12 条请求的记录列表，
+// 把它直接写进文字就是"请求 [object Object],[object Object]"（用户 2026-10-12 的截图）。
+function count(v) {
+  if (v === null || v === undefined || v === "" || typeof v === "object") return "—";
+  const n = Number(v);
+  return Number.isFinite(n) ? String(Math.round(n)) : "—";
+}
+
 // ---------------- 状态页 ----------------
 function render(s) {
   last = s;
@@ -87,6 +95,14 @@ function render(s) {
   $("btn-retry").classList.toggle("hidden", s.state !== "halted");
   $("btn-start").disabled = st === "running" || st === "starting";
   $("btn-stop").disabled = st === "idle" || s.state === "halted";
+  // 蓝色的主按钮跟着"此刻能按的那个"走：服务在跑（含别人启动的、启动中、停止中、
+  // 自动重启中）就该是"停止"亮着；停着才是"启动"亮着；熔断了是"重试"。
+  // 以前 primary 写死在"启动"上，CSS 里又没有 :disabled，运行中看着仍是"启动"在等人点。
+  const busy = st === "running" || st === "starting" || st === "stopping" ||
+               st === "restarting" || st === "external";
+  $("btn-start").classList.toggle("primary", !busy && s.state !== "halted");
+  $("btn-stop").classList.toggle("primary", busy);
+  $("btn-retry").classList.toggle("primary", s.state === "halted");
 
   $("guide").classList.toggle("hidden", !!s.installed);
   const diag = s.diagnosis || "";
@@ -96,14 +112,15 @@ function render(s) {
   const m = s.metrics || {};
   $("m-toks").textContent = num(m.tokens_per_s);
   $("m-step").textContent = num(m.decode_step_ms, 1);
-  $("m-vram").textContent = m.gpu_used_mib ? num(m.gpu_used_mib, 0) : "—";
-  $("m-vram-s").textContent = m.gpu_total_mib ? `已用 / ${num(m.gpu_total_mib, 0)} MiB` : "已用 / 总量";
-  $("m-ram").textContent = m.ram_used_gb ? num(m.ram_used_gb, 1) : "—";
+  $("m-vram").textContent = m.gpu_used_mib === undefined ? "—" : num(m.gpu_used_mib, 0);
+  $("m-vram-s").textContent = m.gpu_total_mib
+    ? `已用 / ${num(m.gpu_total_mib, 0)} MiB${m.gpu_name ? " · " + m.gpu_name : ""}` : "已用 / 总量";
+  $("m-ram").textContent = m.ram_used_gb === undefined ? "—" : num(m.ram_used_gb, 1);
   $("m-ram-s").textContent = m.ram_total_gb ? `已用 / ${num(m.ram_total_gb, 1)} GB` : "已用 / 总量";
-  $("m-active").textContent = m.active === undefined ? "—" : m.active;
-  $("m-queued").textContent = `排队 ${m.queued === undefined ? 0 : m.queued}`;
+  $("m-active").textContent = count(m.active);
+  $("m-queued").textContent = `排队 ${count(m.queued)}`;
   $("m-ctx").textContent = s.max_context ? s.max_context.toLocaleString() : "—";
-  $("m-reqs").textContent = `请求 ${m.requests === undefined ? 0 : m.requests}`;
+  $("m-reqs").textContent = `请求 ${count(m.requests)}`;
 
   $("s-state").textContent = (STATE_TEXT[st] || st) +
     (s.healthy ? (s.loaded ? " · 模型已就绪" : " · 服务在应答，模型未加载")
@@ -178,9 +195,20 @@ async function loadModels() {
     meta.textContent = `${m.context ? m.context.toLocaleString() + " 上下文 · " : ""}端口 ${m.port} · ` +
       `${m.vision ? "视觉+文本 · " : "文本 · "}${m.installed ? "文件在" : "文件不在"}`;
     info.append(name, meta);
+    const cur = m.id === data.current;
+    // 服务此刻在不在跑（模型页每 5 秒跟着状态页一起刷，last 就是最近一次的 /neo/status）
+    const st = last ? (last.display_state || last.state) : "idle";
+    const busy = st === "running" || st === "starting" || st === "stopping" ||
+                 st === "restarting" || st === "external";
     const btn = document.createElement("button");
-    btn.textContent = m.id === data.current ? "正在用" : "启动它";
-    btn.disabled = m.id === data.current || !m.installed;
+    // 换模型走 supervisor.set_model：它自己先 stop 再 start，用户不用先按停止。
+    // 但服务在跑时点它，正在跑的请求会被切断，所以按钮写"换过去"，鼠标上去说清楚它先停谁。
+    btn.textContent = cur ? "正在用" : (busy ? "换过去" : "启动它");
+    btn.disabled = cur || !m.installed;
+    btn.title = cur ? "当前服务正在用这个模型"
+      : (!m.installed ? "模型文件不在，起不来"
+        : (busy ? `会先停掉当前服务（正在跑的请求会被切断），再用「${m.name}」重新起`
+                : `用「${m.name}」起服务`));
     btn.onclick = async () => { const s = await act("set_model", { model: m.id }); if (s) render(s); };
     row.append(info, btn);
     box.append(row);

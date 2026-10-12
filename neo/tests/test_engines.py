@@ -25,10 +25,18 @@ def write_config(folder: Path, name: str, **over):
     return folder / name
 
 
+def make_exe(folder: Path, name: str = "strata.exe"):
+    """装好的 Strata 一定有引擎 exe（setup.py 的 check_install 也这么要求）：
+    测试要的是"装好了"的样子，所以建一个空文件占位，plan() 只看它在不在。"""
+    (folder / name).write_text("#!/bin/sh\n", encoding="utf-8")
+    return folder / name
+
+
 class TestDiscover(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp(prefix="neo-eng-"))
+        make_exe(self.tmp)
         a = write_config(self.tmp, "strata-a.json", port=8123)
         time.sleep(0.02)
         b = write_config(self.tmp, "strata-b.json")
@@ -66,11 +74,63 @@ class TestDiscover(unittest.TestCase):
         (self.tmp / "strata-broken.json").write_text("{not json", encoding="utf-8")
         self.assertEqual(len(list_configs(self.tmp)), 2)
 
+    def test_flat_args_shape(self):
+        """真实 Strata 配置（setup.py 写的）不长 path/args 字典，长一个扁平 args 数组。
+
+        实测 2026-10-12 在 D:\\Work\\Strata：strata-swift-iq3_xxs.json 里模型在
+        args 的 --native 后面、上下文在 --max-context 后面、没有 path 键。
+        只认 path + 字典 args 时这些配置全被当成"没装"，报错还因为
+        cfg["path"] 是空的而写成"模型文件不在："（后面什么都没有）。
+        """
+        cfg = {"model_name": "swift-1.5-iq3_xxs", "port": 8080,
+               "args": ["--native", r"D:\Work\Strata-data\models\swift-IQ3_XXS\m.gguf",
+                        "--pack", r"D:\Work\Strata-data\packs\swift-iq3_xxs",
+                        "--max-context", 202072, "--mtp", "mtp.gguf", "--gpu", "0"]}
+        (self.tmp / "strata-flat.json").write_text(json.dumps(cfg), encoding="utf-8")
+        item = next(x for x in list_configs(self.tmp) if x["id"] == "strata-flat.json")
+        self.assertEqual(item["path"], r"D:\Work\Strata-data\models\swift-IQ3_XXS\m.gguf")
+        self.assertEqual(item["context"], 202072, "--max-context 优先于 --context")
+        self.assertEqual(item["port"], 8080)
+        self.assertEqual(item["name"], "swift-1.5-iq3_xxs")
+        self.assertIn("--mtp", item["args"], "扁平 args 原样带过去")
+        self.assertIn("模型文件不在", "；".join(item["missing"]), "模型不在 Strata-data 里要标出来")
+
+    def test_no_exe_is_not_installed(self):
+        """模型在、引擎 exe 不在 = 没装好：要标出来，plan() 要说清缺的是 exe。"""
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="neo-eng-noexe-"))
+        write_config(tmp, "strata-a.json")
+        (tmp / "a.gguf").write_text("x", encoding="utf-8")
+        item = list_configs(tmp)[0]
+        self.assertFalse(item["installed"], "没有 strata.exe 不能算装好了")
+        self.assertTrue(any("exe" in m for m in item["missing"]), "缺的要写清是 exe")
+        with self.assertRaises(FileNotFoundError) as got:
+            make_adapter("strata", tmp).plan(8080)
+        self.assertIn("exe", str(got.exception))
+
+    def test_default_skips_uninstallable(self):
+        """没点名时挑一个能启动的；全都不行才回第一个，让报错说清缺了什么。"""
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="neo-eng-def-"))
+        make_exe(tmp)
+        write_config(tmp, "strata-bad.json")                       # 最新，但模型不在
+        time.sleep(0.02)
+        write_config(tmp, "strata-good.json")
+        (tmp / "good.gguf").write_text("x", encoding="utf-8")
+        # 写入顺序：strata-good.json 最新 -> 排最前
+        self.assertEqual(make_adapter("strata", tmp).default_config()["id"], "strata-good.json")
+        (tmp / "good.gguf").unlink()
+        self.assertEqual(make_adapter("strata", tmp).default_config()["id"], "strata-good.json",
+                         "全都起不来时回最前的那个，报错说的是它")
+        named = make_adapter("strata", tmp, {"model": "strata-bad.json"}).default_config()
+        self.assertEqual(named["id"], "strata-bad.json", "点名的哪怕起不来也要回它")
+
 
 class TestPlan(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp(prefix="neo-plan-"))
+        make_exe(self.tmp)
         write_config(self.tmp, "strata-x.json", port=8080)
         (self.tmp / "x.gguf").write_text("x", encoding="utf-8")
         self.adapter = make_adapter("strata", self.tmp)
@@ -99,10 +159,36 @@ class TestPlan(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.adapter.plan(8080)
 
+    def test_missing_model_message_is_complete(self):
+        """报错要说清缺了什么。实测 2026-10-12 的 manager.log 里那条是空的"模型文件不在："
+        —— 后面什么都没有，用户只能看到五个字。"""
+        (self.tmp / "x.gguf").unlink()
+        with self.assertRaises(FileNotFoundError) as got:
+            self.adapter.plan(8080)
+        msg = str(got.exception)
+        self.assertIn("strata-x.json", msg, "要说清是哪个配置起不来")
+        self.assertIn("模型文件不在", msg)
+        self.assertFalse(msg.rstrip().endswith("："), "消息后面不能是空的")
+
+    def test_log_path_for_reads_config_log(self):
+        """脚本先起来的服务的日志 = 配置里的 log 键（run-*.bat 写的就是它）。
+
+        Neo 接手那个服务之后，日志页要指向同一个文件；实测 2026-10-12 在
+        D:\\Work\\Strata：接手成功了、服务在跑，日志页是空的。
+        """
+        cfg = json.loads((self.tmp / "strata-x.json").read_text(encoding="utf-8"))
+        cfg["log"] = "strata-x.log"
+        (self.tmp / "strata-x.json").write_text(json.dumps(cfg), encoding="utf-8")
+        self.assertEqual(self.adapter.log_path_for("strata-x.json"),
+                         str(self.tmp / "strata-x.log"))
+        self.assertEqual(make_adapter("mock", ROOT).log_path_for("mock"), "",
+                         "没有 log 键就是没有，不要编一个路径出来")
+
     def test_pages(self):
         pages = self.adapter.pages(8080)
         self.assertEqual(pages["chat"], "http://127.0.0.1:8080/")
-        self.assertEqual(pages["monitor"], "http://127.0.0.1:8080/monitor.html")
+        # 实测 2026-10-12 在跑着的服务上：/monitor.html 是 404，监控页是聊天页的 #monitor 标签
+        self.assertEqual(pages["monitor"], "http://127.0.0.1:8080/#monitor")
 
     def test_mock_adapter(self):
         plan = make_adapter("mock", ROOT).plan(8095)

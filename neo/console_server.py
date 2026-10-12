@@ -14,6 +14,8 @@ psutil / sentencepiece / huggingface-hub / safetensors / jinja2），装新包�
     GET  /neo/models           可启动的模型列表
     POST /neo/start /stop /retry
     POST /neo/model            换模型（重启服务）
+    POST /neo/open             在浏览器里打开聊天页/监控页（页面里点"打开"就是这条）
+    POST /neo/open-log         用系统默认方式打开服务日志
     GET  /neo/config  POST /neo/config
     GET  /neo/log?tail=N       服务日志尾部
     GET  /neo/events           监督的事件时间线
@@ -21,19 +23,61 @@ psutil / sentencepiece / huggingface-hub / safetensors / jinja2），装新包�
 from __future__ import annotations
 
 import json
+import os
+import socket
+import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from .paths import safe_resolve
+from . import paths
 
-WEB_DIR = safe_resolve(Path(__file__).parent) / "web"
+WEB_DIR = paths.web_dir()
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
+def neo_console_info(port: int, timeout: float = 0.8) -> dict | None:
+    """这个端口上有没有一个 Neo 控制台在应答。有就回它的状态快照，没有回 None。
+
+    实测 2026-10-12（D:\\Work\\Strata）：18:39 起的旧 Neo（pythonw -m neo.manager，跑的是
+    修好前的代码）与 19:34 起的 NeoStrata.exe 同时在听 127.0.0.1:8083，页面每 2 秒一次的
+    轮询全落在旧的那个上 —— 窗口里是"未启动 / 文件不在 / 没有日志"，而真正在跑的服务
+    在另一个进程里（45372 在听 8080，日志 10 KB 还在写）。
+    """
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/neo/status",
+                                     headers={"User-Agent": "NeoStrata/0.1",
+                                              "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and "state" in data else None
+
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """绑控制台端口时用 SO_EXCLUSIVEADDRUSE（Windows）：别人抢不走，我们也不抢别人的。
+
+    ThreadingHTTPServer 默认 allow_reuse_address=True，绑之前会设 SO_REUSEADDR；
+    Windows 上这个标志等于"允许重复绑定同一个端口"，于是两个 Neo 都能监听 8083，
+    新连接落在先绑的那个上（实测见 neo_console_info 的注释）。清掉它、改设独占标志，
+    端口被占时 bind 直接失败，start() 就换下一个端口。
+    """
+
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -155,19 +199,45 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, sup.set_model(model))
         elif path == "/neo/config":
             self._json(200, self.server.apply_config(body))
+        elif path in ("/neo/open", "/neo/open-log"):
+            self._shell_action("open_page" if path == "/neo/open" else "open_log", body)
         else:
             self._json(404, {"error": "not found"})
+
+    def _shell_action(self, name: str, body: dict) -> None:
+        """"打开聊天页 / 监控页 / 日志文件"这类动作：由壳（manager.Shell）执行。
+
+        页面不再经 pywebview 的 js_api 调这些 —— 那条路一次点击要窗口线程两次收消息，
+        窗口线程一停，第一次点击的 promise 永不返回，后面每次点击都排在它后面
+        （实测"一点就卡死"）。放在服务上，窗口就只是个容器，浏览器里也是同一条路。
+        """
+        shell = getattr(self.server, "shell", None)
+        if shell is None:
+            self._json(503, {"error": "Neo 壳没在跑，打不开页面"})
+            return
+        call = getattr(shell, name, None)
+        if call is None:
+            self._json(503, {"error": f"壳不支持 {name}"})
+            return
+        try:
+            if name == "open_page":
+                self._json(200, call(str(body.get("page") or "chat")))
+            else:
+                self._json(200, call())
+        except Exception as e:                              # 打开失败要回话，不能让页面干等
+            self._json(500, {"error": f"打不开：{e}"})
 
 
 class ConsoleServer:
     """控制台服务的持有者。start() 起线程，url 给壳加载，stop() 收尾。"""
 
     def __init__(self, supervisor, host: str = "127.0.0.1", port: int | None = None,
-                 strata_port: int | None = None, allowed_hosts=()):
+                 strata_port: int | None = None, allowed_hosts=(), shell=None):
         self.supervisor = supervisor
         self.host = host
         self.strata_port = strata_port
         self.allowed_hosts = tuple(allowed_hosts)
+        self.shell = shell                                # 页面里"打开页面/日志"由它执行
         self.httpd = None
         self.thread = None
         self.port = None
@@ -178,24 +248,40 @@ class ConsoleServer:
         return 8083 if strata_port is None else int(strata_port) + 3
 
     def start(self) -> str:
-        """起服务。约定端口被占用时依次试 +1..+5（参考实现的做法）。"""
+        """起服务。约定端口被占用时依次试 +1..+5（参考实现的做法）。
+
+        两条规则（实测 2026-10-12，见 neo_console_info 的注释）：
+        端口上已有 Neo 在应答就跳过它，绑定时独占 —— 绝不与另一个 Neo 共用一个端口，
+        共用时页面显示的是那个 Neo 的状态，不是这个窗口的。
+        """
         tried = [self._pick] if self._pick is not None else [8083]
         if self.strata_port is not None:
             base = int(self.strata_port) + 3
             tried += [base + i for i in range(6) if base + i not in tried]
         last_error = None
+        taken = []
         for port in tried:
+            other = neo_console_info(port)
+            if other is not None:
+                taken.append((port, other.get("neo_pid") or "?"))
+                continue
             try:
-                httpd = ThreadingHTTPServer((self.host, port), partial_handler(self))
+                httpd = _ExclusiveHTTPServer((self.host, port), partial_handler(self))
                 break
             except OSError as e:
                 last_error = e
         else:
-            raise RuntimeError(f"控制台端口起不来：{last_error}")
+            hint = ""
+            if taken:
+                hint = "；这些端口上已有别的 Neo 在应答：" + \
+                    "、".join(f"{p}（进程 {pid}）" for p, pid in taken) + \
+                    " —— 任务管理器里结束它，或把本机的控制台端口改成别的"
+            raise RuntimeError(f"控制台端口起不来：{last_error}{hint}")
         httpd.supervisor = self.supervisor
         httpd.allowed_hosts = self.allowed_hosts
         httpd.public_config = self.public_config
         httpd.apply_config = self.apply_config
+        httpd.shell = self.shell
         self.httpd = httpd
         self.port = httpd.server_address[1]
         self.thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="neo-console")
@@ -247,12 +333,14 @@ if __name__ == "__main__":                                      # 单独跑一�
 
     from .engines import make_adapter
     from .supervisor import Supervisor
-    root = safe_resolve(Path(__file__).parent).parent
+    root = paths.app_dir().parent                  # 源码跑是仓库根；exe 跑是 exe 所在目录
     engine = sys.argv[1] if len(sys.argv) > 1 else "strata"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
     adapter = make_adapter(engine, root)
     sup = Supervisor(adapter, port)
     console = ConsoleServer(sup, strata_port=port)
+    from .manager import Shell                                # 只在单独跑调试时用，不绕开循环导入
+    console.shell = Shell(sup, console)
     print("控制台:", console.start())
     sup.start()
     try:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -203,6 +204,53 @@ class TestSafeResolve(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         self.assertFalse(is_reparse(tmp))
         self.assertFalse(is_reparse(tmp / "nope"))
+
+
+class TestInstance(unittest.TestCase):
+    """neo/state/instance.json - "已经有一个在跑了"时要说清是谁。
+
+    实测 2026-10-12：pywebview 缺了时 Neo 走浏览器界面，没有窗口，进程在后台挂着；
+    用户看不到任何东西，再开一次只看到"已经在运行了"，不知道找谁。
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="neo-inst-"))
+        self._instance = state.INSTANCE
+        state.INSTANCE = self.tmp / "instance.json"
+
+    def tearDown(self):
+        state.INSTANCE = self._instance
+
+    def test_record_read_clear(self):
+        state.record_instance(root=str(self.tmp), strata_port=8080,
+                              console_url="http://127.0.0.1:8083/", mode="window")
+        info = state.instance_info()
+        self.assertEqual(info["root"], str(self.tmp))
+        self.assertEqual(info["pid"], os.getpid(), "没给 pid 就用当前进程")
+        self.assertEqual(info["mode"], "window")
+        state.clear_instance()
+        self.assertEqual(state.instance_info(), {})
+
+    def test_record_merges(self):
+        """起窗口前先记一次，起窗口后只补 mode/url，不能把 root 抹了。"""
+        state.record_instance(root=str(self.tmp), strata_port=8080)
+        state.record_instance(mode="browser", console_url="http://127.0.0.1:8083/")
+        info = state.instance_info()
+        self.assertEqual(info["root"], str(self.tmp))
+        self.assertEqual(info["mode"], "browser")
+
+    def test_alive_with_own_pid(self):
+        state.record_instance(root=str(self.tmp))
+        self.assertTrue(state.instance_alive())
+
+    def test_stale_record_is_cleared(self):
+        from neo.tests.test_supervisor import dead_pid
+        # record_instance() 的 pid 永远是当前进程；这里要的是"记录里那个进程已经没了"
+        state.write_json(state.INSTANCE, {"pid": dead_pid(), "root": str(self.tmp)})
+        self.assertFalse(state.instance_alive(), "进程没了就是过期记录")
+        state.clear_instance()
+        self.assertEqual(state.instance_info(), {}, "清掉之后读出来是空的")
 
 
 if __name__ == "__main__":

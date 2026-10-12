@@ -14,10 +14,18 @@ M4（llama.cpp 引擎适配与打包）还没开始。
 python neo/install_neo.py          # 装 pywebview（装进 Strata 的 .venv，没有 .venv 就装当前 Python）
 NEO-START.bat                      # Windows 双击/命令行启动；没有控制台用 neo\NEO-START.vbs
 python neo/manager.py              # 直接跑；--engine mock 用 mock 引擎，--no-webview 用浏览器
+NeoStrata.exe                      # 打好的单文件 exe，放进 Strata 的根目录双击就跑（见"打成 exe"）
 ```
 
 pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或没装 pywebview 时，
 `neo/manager.py` 自动退回浏览器界面 —— 控制台服务是标准库写的，功能一样，只是没有原生窗口。
+这条路上进程在后台挂着、屏幕上什么都没有，所以"第二个实例被挡住了"那句话必须说清
+在跑的是谁（见下面"第二个实例"）。
+
+**控制台被 QuickEdit 卡住**：用控制台方式跑（`.bat` / `python -m neo.manager`）时，在窗口里
+点一下就会进入选择状态，控制台缓冲区被选中后写 stdout 的线程会停在那里 —— Neo 的
+输出走这条线程，窗口就"未响应"了。三个办法：在控制台属性里关掉 QuickEdit；用
+`neo\NEO-START.vbs`（没有控制台）；用 `NeoStrata.exe`（窗口版，根本没有控制台）。
 
 ### 双击闪退（已修）
 
@@ -31,24 +39,42 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
   `neo\state\logs\manager.log` 的最后 15 行，按任意键才关；`.bat` 开头加了 `chcp 65001`，
   中文日志在控制台里不再成乱码。
 
-第二个实例（比如上一次没退干净）弹"Neo 已经在运行了"模态提示后退出 —— 这个框要点掉，
+**第二个实例**（比如上一次没退干净）弹"Neo 已经在运行了"模态提示后退出 —— 这个框要点掉，
 不是闪退。端口被上一次留下的服务占着时，新实例会接手它（状态页显示"接手已在运行的服务"）。
+
+互斥体按**根目录**分开（`neo/manager.py` 的 `mutex_name_for(root)`）：两个不同 Strata 目录
+各跑一个 Neo 不互相挡；同一个目录跑第二个才被挡。第二个实例要说清"在跑的是谁"，靠的是
+`neo/state/instance.json`（`state.record_instance()` 记的 pid / root / 端口 / 界面地址 /
+窗口还是浏览器，`atexit` 在退出时抹掉）：
+
+```
+已经有一个 Neo 在跑：进程 47308，根目录 D:\Work\Strata。
+它的界面在 http://127.0.0.1:8083/
+要关掉它：任务管理器里结束进程 47308。要绕过这个检查：加 --force。
+```
+
+浏览器界面那条路把 `mode="browser"` 记进去，第二句就换成"它没有窗口 —— 界面在浏览器里：…"，
+并给出装 pywebview 的命令。记录里那个进程已经没了（上次被任务管理器结束、断电）时说的是
+另一句："…但它已经没了 —— 这条记录已清掉"，并顺手把过期记录抹掉（`state.instance_alive()`
+用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` 问，不发消息、不碰那个进程）。
+实测 2026-10-12 在 Windows 11：`NeoStrata.exe` 起一个后，第二个实例的日志里就是上面那段话。
 
 ## 文件
 
 | 文件 | 作用 |
 | --- | --- |
-| `neo/manager.py` | 桌面壳：单实例互斥体、窗口几何持久化、pywebview 容器、浏览器退回 |
+| `neo/manager.py` | 桌面壳：单实例互斥体（按根目录）、窗口几何持久化、pywebview 容器（**不挂 js_api**）、浏览器退回、`--force` |
 | `neo/supervisor.py` | 进程监督：启动、探活、退避重启、熔断、诊断、事件时间线 |
-| `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口 |
-| `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志），原子写 + `.bak` |
-| `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段 |
-| `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队 |
+| `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口；页面里所有动作的落点，含 `POST /neo/open` / `/neo/open-log` |
+| `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志、`instance.json`），原子写 + `.bak`；exe 里状态落点见 `pick_state_dir()` |
+| `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点 |
+| `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队；`NullStream` 接窗口版里 `sys.stdout` 是 `None` 的情况 |
 | `neo/ui_watchdog.py` | 窗口线程看门狗：`evaluate_js` 探窗口线程，3 秒没回音就把各线程当前所在帧写进日志 |
 | `neo/jobobj.py` | Windows Job Object：Neo 结束时子进程（含引擎、视觉编码器）跟着结束 |
 | `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 |
-| `neo/tests/` | 33 个测试（见下） |
+| `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
+| `neo/tests/` | 77 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -71,6 +97,12 @@ idle ──启动──> starting ──/health 应答──> running
 - **引擎重载不归 Neo**：`serve/server.py` 自己会重启引擎（`StrataEngine.restart`，issue #344），
   Neo 只在事件里显示一条提示，不干预。
 - **端口上已有活着的服务就接手**：用户先用 `START-HERE.bat` 起来了，Neo 认下它，不重复启动。
+- **认服务是自家的还是外人的，走进程树，不能只比 pid**：启动服务的那个 python 自己会再拉
+  一个进程去跑脚本，所以端口上的监听者通常是 Neo 孩子的孩子。实测 2026-10-12 在
+  `D:\Work\Strata`：NeoStrata 40856 → NeoStrata 46380 → `.venv\Scripts\python.exe`（跳板）
+  46984 → 绑上 8080 的 45868，后两条命令行一模一样；单独启动那个 venv 的 python.exe，
+  启动它回 42016、真正跑脚本的是它的孩子 42388。`jobobj.is_descendant` 就是干这件事的：
+  按"监听者不是我孩子就是外人的服务"写，会把 Neo 自己正在应答的服务判成外人的并杀掉它。
 - **熔断给一句能照着做的提示**：从日志尾部认 `out of memory` / `failed to map` /
   `page file` / `already in use` / `driver is too old` 等，措辞对齐 `docs/TROUBLESHOOTING.md`。
 
@@ -86,7 +118,34 @@ GET  /neo/models            可启动的模型（根目录的 strata-*.json，�
 GET  /neo/log?tail=N        服务日志尾部
 GET  /neo/config            POST /neo/config     启动设置（存 neo/state/launcher.json，不回显 key）
 POST /neo/start /stop /retry /model
+POST /neo/open               {"page":"chat|monitor"} 在浏览器里打开那一页（由壳执行）
+POST /neo/open-log           用系统默认方式打开服务日志
 ```
+
+## 模型配置的形状（`strata-*.json`）
+
+配置是 `setup.py` 写的，Neo 只读它、拼成 `serve/server.py` 的命令行参数，不改上游一行。
+实测 2026-10-12 在 `D:\Work\Strata`（4 个配置全部识别，`installed=True`）：
+
+```
+{"exe": "engine/strata.exe", "cwd": "D:\\Work\\Strata",
+ "args": ["--native", "D:\\Work\\Strata-data\\models\\swift-IQ3_XXS\\...gguf",
+          "--pack", "D:\\Work\\Strata-data\\packs\\swift-iq3_xxs",
+          "--max-context", 202072, "--mtp", "...", "--gpu", "0", ...],
+ "model_name": "swift-1.5-iq3_xxs", "port": 8080, "tokenizer": ..., "log": ..., "vision": {...}}
+```
+
+- **模型文件在 `args` 的 `--native` 里**（其次 `--pack`、`vision.model`），**没有 `path` 键**；
+  上下文在 `--max-context` 里（其次 `--context`）。`neo/engines/strata.py` 的
+  `model_file_of()` / `context_of()` / `arg_value()` 两种形状都认（扁平列表与老字典）。
+- 早期只认 `path` + 字典 `args` 的版本在真实配置上永远算不出模型文件，启动时报的是
+  **空消息"模型文件不在："**（`cfg["path"]` 本来就是空的）—— 实测 2026-10-12 的 `manager.log`。
+- 引擎程序：配置里的 `exe` 键优先（相对路径按 `cwd` 展开，与 `serve/server.py` 里那句注释一样），
+  没有就看根目录的 `strata.exe` / `strata-hip.exe` / `strata-sycl.exe`。
+- 缺什么就一条一句写清（`missing_parts()`），启动被拒时原样给用户，不再报空消息。
+- 模型目录默认在 Strata 的 `<根目录>-data`（实测 `D:\Work\Strata-data`：`models` / `mtp` / `packs`）。
+- 没点名模型时挑一个**能启动的**配置（`base.py` 的 `default_config()`：点名的 → 第一个已安装的 →
+  第一个），全都不行才回第一个，让报错说的是它。
 
 ## 日志与控制台输出：刷屏的四个来源，逐个实测过
 
@@ -136,7 +195,7 @@ pywebview/pythonnet 的属性链递归日志、`RecursionError` 的消息都是�
 
 标题栏上的"(未响应)"就是窗口线程没在收消息。这条线程是 pywebview 自己起的 STA 线程
 （`platforms/winforms.py` 的 `create_window`：`ThreadStart(create)` + `ApartmentState.STA`），
-Python 主线程只在 `thread.Join(500)` 里转。页面里一次点击的完整路子：
+Python 主线程只在 `thread.Join(500)` 里转。页面里一次点击经 pywebview 的 js_api 桥的完整路子：
 
 1. 点按钮 → WebView2 `PostWebMessageAsJson` → `platforms/edgechromium.py:225` 的
    `on_script_notify` **在窗口线程上**执行，它里面的 `print` 也在这条线程上写 stdout；
@@ -146,13 +205,28 @@ Python 主线程只在 `thread.Join(500)` 里转。页面里一次点击的完�
 4. 窗口线程跑这个委托要抢 GIL。它一旦长时间抢不到 GIL，或者被 `print` 卡在控制台上，
    消息循环就停住：所有 js_api 调用都不返回，窗口点什么都没反应。
 
-Neo 这边喂这个坑的三处，逐个堵掉：
+**主修：摘掉这座桥，动作全走服务。** `neo/manager.py` 的 `window_kwargs()` 里**没有 `js_api`**，
+窗口只是容器；页面（`neo/web/app.js`）的每个动作只发 HTTP 到控制台服务，连"打开聊天页 /
+监控页"（`POST /neo/open`）和"打开日志文件"（`POST /neo/open-log`）也一样，由挂在服务上的
+`Shell` 执行（`neo/console_server.py` 的 `_shell_action`）。点击路径上一行 Python 都不跑，
+窗口线程只做一件事：收消息。浏览器界面走的是同一批接口，两条路从此完全一样。
+`neo/tests/test_ui.py` 的 `TestClickPathIsHttpOnly` 盯着这条 —— 窗口参数里出现 `js_api`、
+页面代码里出现 `window.pywebview`，测试就红。
+
+实测 2026-10-12（Windows 11 / pywebview 6.2.1 / 打包的 `NeoStrata.exe`，mock 引擎，端口 8780）：
+窗口开着跑 95 秒（页面每 2 秒一次 HTTP 轮询），`Responding=True`，`manager.log` 里 0 次"没应答"；
+`GET /neo/status` 8.7 ms、`POST /neo/start` 4.5 ms、`POST /neo/open` 65.3 ms（真开了浏览器）、
+`POST /neo/open-log` 146.7 ms（真打开了日志文件）。同一个 exe 放进 `D:\Work\Strata` 跑
+`--no-start`：窗口 `Responding=True`、模型页列出 4 个模型、`POST /neo/open` 回 200、日志 0 次"没应答"。
+
+桥摘掉之前喂这个坑的三处留着 —— 它们挡的是"窗口线程上的 print 与 GIL"，看门狗探针和
+pywebview 自己的线程仍然走那条路：
 
 | 处 | 原来 | 现在 | 实测 |
 | --- | --- | --- | --- |
 | `console_io.BoundedStream.write` | 排队等 `_lock`。有线程卡在真流的写上（控制台被 QuickEdit 选中、管道满）时，窗口线程跟着挂住 | 拿不到锁立刻返回，这一行丢掉并计数 | 别的线程占住锁时 `write()` 立刻返回（测试断言 < 0.5 秒），行计入"控制台写不动，丢弃 N 行" |
 | `state.log()` | 每条日志把整个尾部（最多 200 KB）读出来逐行清洗再整份回写，全程握着 GIL | 常态只追加一行，超过 `LOG_MAX` 才裁一次 | 20 条日志 = 20 次追加写、文件里 0 个 `\r`；6 个线程并发 90 条，不丢不咬 |
-| `Shell.stop()` | `sup.stop()` 里 `thread.join(timeout=10.0)`，这条 js_api 调用挂 10 秒，页面里 `await` 它的按钮一直转 | `join_s=0.5`，剩下的收尾由监督线程自己走完，状态页靠 2 秒一次的轮询更新 | 点停止 0.5 秒内回话 |
+| `Shell.stop()` | `sup.stop()` 里 `thread.join(timeout=10.0)`，这条调用挂 10 秒，页面里 `await` 它的按钮一直转 | `join_s=0.5`，剩下的收尾由监督线程自己走完，状态页靠 2 秒一次的轮询更新 | 点停止 0.5 秒内回话 |
 
 顺带修掉一件事：pywebview 6.2.1 **没有** `window.get_geometry()`（实测 `window.py` 里搜不到
 `geometry`），`neo/manager.py` 以前每 5 秒调一次、每次抛 `AttributeError` 被 `except Exception`
@@ -165,8 +239,43 @@ Neo 这边喂这个坑的三处，逐个堵掉：
 `window.evaluate_js("1")` 必须等窗口线程收消息才回得来。超过 3 秒没回音就认定卡住，把每个
 Python 线程当前停在哪一帧（`sys._current_frames()`）逐行写进 `neo/state/logs/manager.log`，
 两次现场之间至少隔 30 秒。探针只在后台线程上跑，在飞的最多 4 个。实测带窗口跑 1 分钟
-（页面每 2 秒一次 js_api 轮询）：日志里 0 次"没应答"，进程 `Responding=True`；测试里把
+（页面每 2 秒一次 HTTP 轮询）：日志里 0 次"没应答"，进程 `Responding=True`；测试里把
 `evaluate_js` 挂住，日志里立刻出现"没应答"和 `neo-ui-probe` 停在哪一帧。
+
+## 打成 exe（`NeoStrata.exe`）
+
+```
+python -m pip install pyinstaller      # 只在打包时用，用户那边不用装
+python -m neo.build_exe                # 打出来放在仓库根：NeoStrata.exe
+python -m neo.build_exe --dest D:\Work\Strata
+```
+
+按 `neo/NeoStrata.spec` 打一个单文件 exe，**设计成放进 Strata 的根目录双击就跑**。
+实测 2026-10-12 在 Windows 11 / Python 3.13.15 / PyInstaller 6.22.3：**16.8 MB**；双击后
+出窗口（标题 Neo Strata）、`Responding=True`、`/neo/status` 到 `state=running`
+（`served_model=qwen3.8-flash-next`）、`neo/state/instance.json` 里 `mode="window"`。
+
+- **exe 的"根目录"就是 exe 自己所在的目录**（`neo/manager.py` 的 `default_root()`；源码跑时是
+  `neo/` 的上一层）。状态、日志、窗口几何都落在 `<根目录>\neo\state\`
+  （exe 在不可写目录里时退到 `%APPDATA%\Neo Strata`，`state.py` 的 `pick_state_dir()`）。
+- **exe 里不打模型、不打引擎、不打 torch / numpy**：Neo 只是用命令行参数启动
+  `serve/server.py`（`neo/engines/strata.py`），模型、引擎、`.venv` 都在 Strata 那边。
+  打进来只会让 exe 变大、版本对不上。
+- **exe 里打 pywebview 与它的 WinForms 后端**（spec 里的 `collect_submodules("webview")`：
+  pywebview 按平台在运行时挑后端，这些导入 PyInstaller 看不见）和控制台页面 `neo/web/`
+  （运行时从解包目录读，`paths.web_dir()`）。
+- **exe 是窗口版（`console=False`），没有控制台**：QuickEdit 那条路直接绕开（见"怎么起来"）。
+  窗口版里 `sys.stdout` / `sys.stderr` 是 `None`，`console_io.NullStream` 接住它们，
+  所有输出走 `neo/state/logs/manager.log`。
+- **exe 需要 Strata 的 `.venv`**：打包后 `sys.executable` 就是 `NeoStrata.exe` 自己，拿它当
+  "Python"等于让 Neo 一遍遍启动 Neo 自己。所以 `state.py` 的 `python_executable()` 在 exe 里
+  只认 `<根目录>\.venv\Scripts\python.exe` 和系统里的 `python`，都没有就报一句
+  "没找到跑 Strata 用的 Python：这个 exe 需要 Strata 目录里的 .venv —— 在 Strata 目录跑一次
+  START-HERE.bat 就有了"。
+- 入口是 `neo/neo_entry.py`：`neo/manager.py` 顶部是包内相对导入，PyInstaller 把包里的模块当
+  顶层脚本分析时认不出父包，那些导入会被标成"找不到模块"，所以给一个显式 import 包的脚本，
+  `pathex` 指到仓库根。
+- 打包产物（`NeoStrata.exe`、`neo/dist/`、`neo/build/`）不进仓库（`neo/.gitignore`）。
 
 ## 测试
 
@@ -175,27 +284,41 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 ```
 
-61 个测试，36.9 秒（Windows，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型；`test_logging` 18 个、`test_ui` 10 个共 4.3 秒，其余 33 个 32.6 秒）：
+77 个测试，39.9 秒（Windows，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 12 个共 5.2 秒，其余 43 个 34.7 秒）：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词。
 - `test_engines`：配置发现与排序（`setup.py` 的 `touch()` 语义）、启动命令只用上游已有参数、
-  模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器。
+  模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器；**真实配置的形状**（扁平 `args`、模型在
+  `--native`、上下文在 `--max-context`、没有 `path` 键）、**模型在而引擎 exe 不在要标出来并拒绝启动**、
+  没点名时挑一个能启动的配置。
 - `test_upstream_api`：Neo 用到的 `serve/server.py` 参数（`--engine/--config/--port/--host/
   --api-key/--gpu`）、`/health` 的字段、`/metrics`、聊天页与监控页文件、`setup.py` 的 M2 参数、
   上游 `requirements.txt` 未被改动。上游改名时这条测试会先响，而不是等用户的 Neo 起不来。
 - `test_console`：状态接口、静态页 no-store、起不来的引擎停在 halted、外站 Origin 与外站 Host 403、
-  设置落盘且不回显 API key。
-- `test_ui`（10 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+  设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
+  没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
+  浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
+- `test_ui`（12 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
-  `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志。
+  `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
+  `window_kwargs()` 里没有 `js_api`（有坐标才写 `x`/`y`）、`app.js` 代码里不出现
+  `window.pywebview` 且带 `/neo/open`、`/neo/open-log` 两条路由。
 - `test_logging`（18 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
   输出有界、说明折叠与丢弃了多少、正常输出不被改；`clean_line` 行为、`install()` 幂等；
   `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
-  `safe_resolve` 把 5000 段 `.SyncRoot` 截到 64 段以内、相对路径与 `..` 正常、`is_reparse` 对普通目录回 False。
+  `safe_resolve` 把 5000 段 `.SyncRoot` 截到 64 段以内、相对路径与 `..` 正常、`is_reparse` 对普通目录回 False；
+  `instance.json` 记下/读回/清掉、只补 `mode` 不抹 `root`、进程没了算过期。
+
+exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --engine mock` 起窗口 →
+`/neo/status` 到 `running`、`Responding=True`、`neo/state/instance.json` 里 `mode="window"`；
+再开第二个实例，日志里出现带 pid / 根目录 / 界面地址 / `--force` 的那段话；关窗口后
+`instance.json` 被 `atexit` 抹掉。摘掉 js_api 桥之后重验一遍：窗口开着跑 95 秒
+`Responding=True`、日志 0 次"没应答"，`POST /neo/open` 与 `/neo/open-log` 都回 200 并真打开了
+页面 / 文件；同一个 exe 放进 `D:\Work\Strata` 跑 `--no-start`，模型页列出 4 个模型。
 
 
 ## 已知边界

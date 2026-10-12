@@ -1,26 +1,53 @@
-// Neo Strata 控制台。数据一律走控制台服务的 HTTP 接口；在 pywebview 壳里按钮走 js_api，
-// 在浏览器里走 POST，两条路调的是同一批监督器方法。
+// Neo Strata 控制台。所有动作只走控制台服务的 HTTP 接口（neo/console_server.py）。
+//
+// 刻意不碰 pywebview 的 js_api 桥（实测 2026-10-12，pywebview 6.2.1 / WinForms + WebView2）：
+// 一次点击要窗口线程两次收消息 —— on_script_notify 收页面的 PostWebMessageAsJson
+// （platforms/edgechromium.py:225，在窗口线程上），方法跑完后 evaluate_js 再用
+// webview.Invoke + semaphore 把结果同步投回窗口线程（edgechromium.py:137）。窗口线程
+// 有一阵不在消息循环里，第一次点击的 promise 就永不返回，脚本消息队列堵住，后面每次
+// 点击都排在它后面 —— 用户看到的就是"一点就卡死"。摘掉这座桥，点击路径上一行 Python
+// 都不跑，窗口线程只管收消息。详见 docs/NEO_DESKTOP.md。
 const $ = (id) => document.getElementById(id);
 const STATE_TEXT = { idle: "未启动", starting: "启动中", running: "运行中",
-                     restarting: "自动重启中", stopping: "停止中", halted: "已停止（熔断）" };
+                     restarting: "自动重启中", stopping: "停止中", halted: "已停止（熔断）",
+                     external: "运行中（外部启动）" };
 const ROUTES = {
   status: ["GET", "/neo/status"], models: ["GET", "/neo/models"], log: ["GET", "/neo/log"],
   config: ["GET", "/neo/config"], start: ["POST", "/neo/start"], stop: ["POST", "/neo/stop"],
   retry: ["POST", "/neo/retry"], set_model: ["POST", "/neo/model"], save_config: ["POST", "/neo/config"],
+  open_page: ["POST", "/neo/open"], open_log: ["POST", "/neo/open-log"],
 };
 
+function note(text) {
+  const el = $("diag");
+  if (!el) return;
+  el.classList.toggle("hidden", !text);
+  if (text) el.textContent = "提示：" + text;
+}
+
 async function api(action, payload) {
-  const js = window.pywebview && window.pywebview.api;
-  const camel = action.replace(/_(\w)/g, (m, c) => c.toUpperCase());
-  const name = js && (js[action] ? action : (js[camel] ? camel : null));
-  if (js && name) {
-    try { return await js[name](payload); } catch (e) { /* 壳调不通就走 HTTP */ }
-  }
   const [method, path] = ROUTES[action] || ["GET", "/neo/status"];
   const opt = { method, headers: { "content-type": "application/json" } };
-  if (method === "POST") opt.body = JSON.stringify(payload || {});
+  if (method === "POST") opt.body = JSON.stringify(payload === undefined ? {} : payload);
   const r = await fetch(path + (action === "log" ? "?tail=60000" : ""), opt);
-  return r.json();
+  const data = await r.json();
+  if (!r.ok) note(`${action} 没成（HTTP ${r.status}：${data.error || "无详情"}）`);
+  return data;
+}
+
+// 按钮动作：同一个动作在飞的时候不再发第二次，请求失败要说出来，不让按钮点了没反应。
+const inflight = new Set();
+async function act(action, payload) {
+  if (inflight.has(action)) return null;
+  inflight.add(action);
+  try {
+    return await api(action, payload);
+  } catch (e) {
+    note(`${action} 没送到服务：${e}`);
+    return null;
+  } finally {
+    inflight.delete(action);
+  }
 }
 
 let last = null;
@@ -49,12 +76,16 @@ function num(v, digits = 1) {
 // ---------------- 状态页 ----------------
 function render(s) {
   last = s;
-  pill($("state-pill"), s.state);
-  pill($("nav-state"), s.state);
-  $("head-model").textContent = s.label || s.model || "";
+  // display_state：端口上有一个脚本先起来的服务在跑时是 "external"（运行中·外部启动），
+  // 那时 Neo 手里没有子进程，但服务确实在应答 —— 写"未启动"是骗人的。
+  const st = s.display_state || s.state;
+  const byOther = !!(s.adopted || s.external);
+  pill($("state-pill"), st);
+  pill($("nav-state"), st);
+  $("head-model").textContent = s.served_model || s.label || s.model || "";
   $("btn-retry").classList.toggle("hidden", s.state !== "halted");
-  $("btn-start").disabled = s.state === "running" || s.state === "starting";
-  $("btn-stop").disabled = s.state === "idle" || s.state === "halted";
+  $("btn-start").disabled = st === "running" || st === "starting";
+  $("btn-stop").disabled = st === "idle" || s.state === "halted";
 
   $("guide").classList.toggle("hidden", !!s.installed);
   const diag = s.diagnosis || "";
@@ -73,12 +104,12 @@ function render(s) {
   $("m-ctx").textContent = s.max_context ? s.max_context.toLocaleString() : "—";
   $("m-reqs").textContent = `请求 ${m.requests === undefined ? 0 : m.requests}`;
 
-  $("s-state").textContent = (STATE_TEXT[s.state] || s.state) +
+  $("s-state").textContent = (STATE_TEXT[st] || st) +
     (s.healthy ? (s.loaded ? " · 模型已就绪" : " · 服务在应答，模型未加载")
                : (s.listening ? " · 端口在听，还没应答" : ""));
   $("s-model").textContent = s.served_model || s.model || "—";
-  $("s-port").textContent = `${s.host}:${s.port}` + (s.adopted ? "（接手已在运行的服务）" : "");
-  $("s-pid").textContent = s.pid ? `${s.pid}${s.adopted ? "（别人启动的）" : ""}` : "—";
+  $("s-port").textContent = `${s.host}:${s.port}` + (byOther ? "（别人启动的，Neo 认下了它）" : "");
+  $("s-pid").textContent = s.pid ? `${s.pid}${byOther ? "（别人启动的）" : ""}` : "—";
   $("s-restarts").textContent = s.state === "halted"
     ? `${s.restarts.length} 次 · 已达上限 ${s.max_restarts}`
     : `${s.restarts.length} 次 · 上限 ${s.max_restarts} · 退避 ${s.backoff.map((x) => x + "s").join("/")}`;
@@ -105,7 +136,7 @@ function render(s) {
 }
 
 async function poll() {
-  try { render(await api("status")); } catch (e) { /* 控制台没起来：下一轮再试 */ }
+  try { render(await api("status")); } catch (e) { note(`控制台服务没应答：${e}`); }
 }
 
 // ---------------- 内嵌页与快捷按钮 ----------------
@@ -117,17 +148,17 @@ function ensureFrame(which) {
 }
 $("chat-reload").onclick = () => { const f = $("chat-frame"); f.src = "about:blank"; ensureFrame("chat"); };
 $("monitor-reload").onclick = () => { const f = $("monitor-frame"); f.src = "about:blank"; ensureFrame("monitor"); };
-$("chat-open").onclick = () => api("open_page", "chat");
-$("monitor-open").onclick = () => api("open_page", "monitor");
-$("btn-chat").onclick = () => api("open_page", "chat");
-$("btn-monitor").onclick = () => api("open_page", "monitor");
-$("btn-log").onclick = () => api("open_log");
-$("guide-log").onclick = () => api("open_log");
+$("chat-open").onclick = () => act("open_page", { page: "chat" });
+$("monitor-open").onclick = () => act("open_page", { page: "monitor" });
+$("btn-chat").onclick = () => act("open_page", { page: "chat" });
+$("btn-monitor").onclick = () => act("open_page", { page: "monitor" });
+$("btn-log").onclick = () => act("open_log");
+$("guide-log").onclick = () => act("open_log");
 $("guide-reload").onclick = poll;
 $("btn-refresh").onclick = poll;
-$("btn-start").onclick = async () => render(await api("start"));
-$("btn-stop").onclick = async () => render(await api("stop"));
-$("btn-retry").onclick = async () => render(await api("retry"));
+$("btn-start").onclick = async () => { const s = await act("start"); if (s) render(s); };
+$("btn-stop").onclick = async () => { const s = await act("stop"); if (s) render(s); };
+$("btn-retry").onclick = async () => { const s = await act("retry"); if (s) render(s); };
 
   return (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(digits).replace(/\.0$/, "");
 }
@@ -154,7 +185,7 @@ async function loadModels() {
     const btn = document.createElement("button");
     btn.textContent = m.id === data.current ? "正在用" : "启动它";
     btn.disabled = m.id === data.current || !m.installed;
-    btn.onclick = async () => render(await api("set_model", { model: m.id }));
+    btn.onclick = async () => { const s = await act("set_model", { model: m.id }); if (s) render(s); };
     row.append(info, btn);
     box.append(row);
   });
@@ -178,7 +209,7 @@ async function loadLog() {
   body.scrollTop = body.scrollHeight;
 }
 $("log-reload").onclick = loadLog;
-$("log-open").onclick = () => api("open_log");
+$("log-open").onclick = () => act("open_log");
 
 // ---------------- 设置页 ----------------
 async function loadConfig() {
@@ -193,7 +224,8 @@ $("set-save").onclick = async () => {
   if (port) body.port = port;
   if ($("set-host").value.trim()) body.host = $("set-host").value.trim();
   if ($("set-key").value.trim()) body.api_key = $("set-key").value.trim();
-  await api("save_config", body);
+  const c = await act("save_config", body);
+  if (!c) return;
   $("set-note").textContent = "已存到 neo/state/launcher.json（端口改了要重启 Neo 才生效）";
   setTimeout(() => { $("set-note").textContent = ""; }, 8000);
 };

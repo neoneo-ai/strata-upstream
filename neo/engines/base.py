@@ -97,12 +97,18 @@ class EngineAdapter:
         return []
 
     def default_config(self):
-        """要启动的那一个配置；没有任何配置时返回 None（Neo 进"未安装"引导态）。"""
+        """要启动的那一个配置；没有任何配置时返回 None（Neo 进"未安装"引导态）。
+
+        点名要的那个优先（哪怕它起不来 —— 报错要说的是用户点名的那个）；
+        没点名就只挑能启动的，全都不行才回第一个，让报错说清缺了什么。
+        """
         items = self.discover()
         if not items:
             return None
         chosen = next((x for x in items if x.get("id") == self.cfg.get("model")), None)
-        return chosen or items[0]
+        if chosen:
+            return chosen
+        return next((x for x in items if x.get("installed")), items[0])
 
     # ---- 启动 ----
     def plan(self, port: int, host: str = "127.0.0.1", api_key: str = "",
@@ -127,10 +133,32 @@ class EngineAdapter:
             out["metrics"] = {k: metrics.get(k) for k in METRIC_KEYS if k in metrics}
         return out
 
+    # ---- 端口与日志（状态页与日志页要用，不依赖启动计划成不成功）----
+    def listening(self, port: int) -> bool:
+        """端口上有没有服务在听。接手的服务只问这个：/health 一时不答（正在生成）
+        不等于服务没了，判成"不见了"会把一个健康的服务重启掉。"""
+        return tcp_open("127.0.0.1", port)
+
+    def log_path_for(self, model_id: str = "") -> str:
+        """这个模型的日志文件在哪。
+
+        脚本（run-*.bat）先起来的服务，日志写在配置里的 log 键那儿，Neo 接手它之后
+        日志页要能显示同一份 —— 否则用户看到的就是"已经启动了，日志页是空的"。
+        """
+        return ""
+
     # ---- 页面 ----
     def pages(self, port: int, host: str = "127.0.0.1") -> dict:
+        """Strata 自己的两个页面：聊天页和监控页。
+
+        实测 2026-10-12 在跑着的服务上（8080）：/monitor.html 回 404 —— 上游只在
+        "/api-monitor" 且配置开了 api_monitor 时才发 monitor.html。监控页是聊天页里
+        的一个标签，地址是 http://127.0.0.1:8080/#monitor（serve/web/app.js 的
+        showTab 认这个 hash）。Neo 的监控页内嵌的就是这个地址，写 /monitor.html
+        时内嵌框是空的（用户看到的"监控是空白页"）。
+        """
         here = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-        return {"chat": f"http://{here}:{port}/", "monitor": f"http://{here}:{port}/monitor.html"}
+        return {"chat": f"http://{here}:{port}/", "monitor": f"http://{here}:{port}/#monitor"}
 
     # ---- 能力 ----
     def capabilities(self) -> dict:

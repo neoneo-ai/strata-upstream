@@ -139,11 +139,38 @@ class BoundedStream:
             self._busy = 0
 
 
+class NullStream:
+    """窗口版 exe（PyInstaller 的 --noconsole）里 sys.stdout / sys.stderr 是 None。
+
+    不包一层的话，print() 直接抛 AttributeError（None 没有 write）。Neo 的输出本来
+    就该进 neo/state/logs/manager.log，控制台没有就没进去，这里把它安静地吞掉。
+    """
+
+    encoding = "utf-8"
+
+    def write(self, text):
+        return len(text) if isinstance(text, str) else len(str(text))
+
+    def writelines(self, lines):
+        return None
+
+    def flush(self) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        raise OSError("Neo 的 exe 没有控制台")
+
+
 def install(line_max: int = LINE_MAX, rate_per_s: float = RATE_PER_S) -> None:
     """把 sys.stdout / sys.stderr 换成闸门。已经装过就不重复包。"""
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
-        if stream is not None and not isinstance(stream, BoundedStream):
+        if stream is None:                     # 窗口版 exe：没有控制台，吞掉
+            setattr(sys, name, NullStream())
+        elif not isinstance(stream, BoundedStream):
             setattr(sys, name, BoundedStream(stream, line_max=line_max, rate_per_s=rate_per_s))
 
 

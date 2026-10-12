@@ -14,6 +14,7 @@ neo/state/launcher.json 里的 root 是用户能改的，--root 也是用户能�
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 #: 路径段数上限。正常路径到不了这个数；到得了的就是 ".SyncRoot" 递归链拼出来的。
@@ -44,3 +45,33 @@ def safe_resolve(path: str | Path, root: str | Path | None = None) -> Path:
     if not parts:
         return Path(os.path.normpath(str(base)))
     return Path(os.path.normpath(str(Path(*parts))))
+
+
+# ---------------- 源码跑 / 打包成 exe 跑：Neo 自己的目录与只读资源 ----------------
+def is_frozen() -> bool:
+    """PyInstaller 的 exe 里跑（sys.frozen）。"""
+    return bool(getattr(sys, "frozen", False))
+
+
+def app_dir() -> Path:
+    """Neo 自己的目录：源码跑是 neo/，exe 跑是 exe 所在的那个目录。
+
+    exe 是设计成放在 Strata 根目录里的（D:\\Work\\Strata\\NeoStrata.exe），
+    所以 exe 跑时"根目录"就是这个目录本身，见 manager.default_root()。
+    """
+    if is_frozen():
+        return safe_resolve(Path(sys.executable).parent)
+    return safe_resolve(Path(__file__).parent)
+
+
+def resource_dir() -> Path:
+    """打包进 exe 的只读资源在哪：PyInstaller 的解包目录；源码跑就是 neo/。"""
+    bundle = getattr(sys, "_MEIPASS", "")
+    if bundle:
+        return safe_resolve(Path(str(bundle)))
+    return safe_resolve(Path(__file__).parent)
+
+
+def web_dir() -> Path:
+    """控制台页面（app.js / style.css / *.html）在哪。exe 里是解包目录下的 web/。"""
+    return (resource_dir() / "web") if is_frozen() else (app_dir() / "web")

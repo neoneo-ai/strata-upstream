@@ -5,7 +5,8 @@
     python neo/manager.py --no-webview       强制用浏览器
 
 窗口里做的事全走控制台服务的 HTTP 接口（neo/console_server.py），pywebview 只当容器：
-壳缺了、WebView2 缺了，界面在浏览器里一模一样，功能不残。
+壳缺了、WebView2 缺了，界面在浏览器里一模一样，功能不残。**窗口不挂 js_api** —— 那座桥
+一次点击要窗口线程两次收消息，窗口线程一停就"一点就卡死"（实测，见 docs/NEO_DESKTOP.md）。
 
 单实例：命名互斥体 Local\\Neo.Strata.SingleInstance。第二个实例提示后退出，
 避免两个壳抢同一个端口、互相把对方的服务当"别人的服务"接手。
@@ -15,6 +16,9 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import hashlib
+import os
 import sys
 import threading
 import time
@@ -27,7 +31,9 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).parent.parent))
     __package__ = "neo"
 
+from . import __version__ as NEO_VERSION
 from . import console_io
+from . import paths
 from . import state
 from .console_server import ConsoleServer
 from .engines import make_adapter
@@ -35,12 +41,18 @@ from .paths import safe_resolve
 from .supervisor import Supervisor
 from . import ui_watchdog
 
-NEO_DIR = safe_resolve(Path(__file__).parent)
-WEB_DIR = NEO_DIR / "web"
+NEO_DIR = paths.app_dir()                       # 源码跑是 neo/，exe 跑是 exe 所在目录
+WEB_DIR = paths.web_dir()
 DEFAULT_STRATA_PORT = 8080
 MIN_W, MIN_H = 900, 640
 DEFAULT_W, DEFAULT_H = 1280, 860
-MUTEX_NAME = "Local\\Neo.Strata.SingleInstance"
+MUTEX_BASE = "Local\\Neo.Strata.SingleInstance"
+
+
+def default_root() -> str:
+    """Strata 的根目录：exe 跑就是 exe 所在目录（exe 就是设计成放进 Strata 目录的），
+    源码跑就是 neo/ 的上一层。"""
+    return str(NEO_DIR if paths.is_frozen() else NEO_DIR.parent)
 
 # 控制台闸门与有界 traceback 要在 import webview 之前装：logging 的 StreamHandler 抓的是
 # 当时 sys.stderr 那个对象，装晚了就管不住 pywebview/pythonnet 往控制台打的内部日志
@@ -50,16 +62,55 @@ state.install_excepthook()
 
 
 # ---------------- Windows：单实例与屏幕范围 ----------------
-def acquire_single_instance() -> int | None:
-    """拿到互斥体回句柄；已经有实例在跑回 None；非 Windows 回 0（不管）。"""
+def mutex_name_for(root) -> str:
+    """互斥体名字按根目录分开：两台装在不同目录里的 Strata 各开各的 Neo，不互相挡。
+
+    实测 2026-10-12：全机器一个名字时，D:\\Work\\projects\\Neo-Strata 的 Neo 与
+    D:\\Work\\Strata 的 Neo 撞在一起，后开的那个只回一句"已经在运行了"。
+    """
+    key = str(root).rstrip("\\/").lower()
+    return f"{MUTEX_BASE}.{hashlib.sha1(key.encode('utf-8')).hexdigest()[:8]}"
+
+
+def acquire_single_instance(root) -> int | None:
+    """拿到互斥体回句柄；这个根目录上已经有实例在跑回 None；非 Windows 回 0（不管）。"""
     if sys.platform != "win32":
         return 0
     import ctypes
 
-    handle = ctypes.c_void_p(ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME))
+    handle = ctypes.c_void_p(ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name_for(root)))
     if ctypes.windll.kernel32.GetLastError() == 183:            # ERROR_ALREADY_EXISTS
         return None
     return handle
+
+
+def describe_running_instance(root) -> str:
+    """"已经有一个在跑了"之后要说清的话：进程号、界面地址、它到底有没有窗口。
+
+    只说"用已经开着的那个窗口"是不够的：pywebview 缺了时 Neo 走的是浏览器界面，
+    那条路根本没有窗口（实测：用户看不到任何窗口，只看到这句话）。
+    """
+    info = state.instance_info()
+    pid = info.get("pid") or "?"
+    if info and not state.instance_alive(info):
+        # 记录里那个进程已经没了：这是上次被硬杀（任务管理器结束、断电）留下的过期记录。
+        # 互斥体还在说明真有一个 Neo 没退干净，所以两句都给，并顺手把过期记录抹掉。
+        state.clear_instance()
+        return (f"记录说进程 {pid} 在跑（根目录 {info.get('root') or root}），"
+                f"但它已经没了 —— 这条记录（{state.INSTANCE.name}）已清掉。\n"
+                "还拦住启动说明上一个 Neo 没退干净：任务管理器里结束 NeoStrata 或 python 进程。\n"
+                "要绕过这个检查：加 --force。")
+    url = str(info.get("console_url") or "").strip()
+    mode = str(info.get("mode") or "").strip()
+    lines = [f"已经有一个 Neo 在跑：进程 {pid}，根目录 {info.get('root') or root}。"]
+    if mode == "browser":
+        lines.append("它没有窗口 —— 界面在浏览器里：" + (url or "（地址没记上）"))
+        lines.append("要一个真正的窗口：在跑 Neo 的那个 Python 里装 pywebview，"
+                     "python -m pip install -r neo/requirements-neo.txt。")
+    elif url:
+        lines.append("它的界面在 " + url)
+    lines.append(f"要关掉它：任务管理器里结束进程 {pid}。要绕过这个检查：加 --force。")
+    return "\n".join(lines)
 
 
 def on_screen(x: int, y: int) -> bool:
@@ -108,10 +159,31 @@ def webview2_installed() -> bool:
     return False
 
 
+def window_kwargs(url: str, x: int = -1, y: int = -1,
+                  w: int = DEFAULT_W, h: int = DEFAULT_H) -> dict:
+    """create_window 的参数。**刻意没有 js_api**：页面里的动作全走控制台服务的 HTTP 接口。
 
-# ---------------- 给页面调的接口（window.pywebview.api.xxx） ----------------
+    js_api 桥在实测里是"一点就卡死"的那条路（一次点击两次窗口线程收消息，
+    见 neo/ui_watchdog.py 与 docs/NEO_DESKTOP.md）。摘掉它之后窗口线程只做一件事：
+    收消息。测试 neo/tests/test_ui.py 里有一条盯着这个字典里不能出现 js_api。
+    """
+    kwargs = {"title": "Neo Strata", "url": url, "width": w, "height": h,
+              "min_size": (MIN_W, MIN_H), "confirm_close": True}
+    if x >= 0 and y >= 0:
+        kwargs.update({"x": x, "y": y})
+    return kwargs
+
+
+
+# ---------------- 壳的动作：由控制台服务的接口调（POST /neo/open、/neo/open-log） ----------------
 class Shell:
-    """pywebview 的 js_api。页面里的按钮最终都落到监督器的方法上。"""
+    """壳这一侧的动作，挂在控制台服务上给页面用；**不再挂成 pywebview 的 js_api**。
+
+    挂成 js_api 时，页面里一次点击要窗口线程两次收消息（收 postMessage、再用 Invoke
+    把返回值同步投回窗口线程）。窗口线程一停，第一次点击的 promise 永不返回，后面每次
+    点击都排在它后面 —— 实测就是"一点就卡死"。放在服务上，窗口只是个容器：点击路径上
+    一行 Python 都不跑，浏览器界面走的是同一批接口。
+    """
 
     def __init__(self, sup: Supervisor, console: ConsoleServer):
         self.sup = sup
@@ -127,8 +199,9 @@ class Shell:
     def stop(self):
         """页面里的"停止"。收尾最长等 0.5 秒就回，剩下的监督线程自己走完。
 
-        js_api 的返回值要靠 evaluate_js 同步投递回窗口线程，这一条调用挂着不动，
-        页面里 await 它的按钮就一直转；状态页每 2 秒轮询一次，停止的结果由轮询给出。
+        这条调用挂在服务的请求线程上，页面里是 await 着的：等满 supervisor.stop() 里
+        那个 join(timeout=10.0)，按钮就 10 秒不转完。状态页每 2 秒轮询一次，停止的
+        结果由轮询给出。
         """
         return self.sup.stop(join_s=0.5)
 
@@ -184,7 +257,7 @@ class Shell:
 # ---------------- 主流程 ----------------
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Neo Strata 桌面管理器")
-    p.add_argument("--root", default=str(NEO_DIR.parent), help="Strata 的根目录")
+    p.add_argument("--root", default=default_root(), help="Strata 的根目录（exe 跑就是 exe 所在目录）")
     p.add_argument("--engine", default="strata", help="引擎适配器：strata（默认）或 mock（测试）")
     p.add_argument("--port", type=int, default=0, help="Strata 服务的端口（默认取配置里的，再默认 8080）")
     p.add_argument("--console-port", type=int, default=0, help="控制台端口（默认 Strata 端口 + 3）")
@@ -193,6 +266,7 @@ def parse_args(argv=None):
     p.add_argument("--model", default="", help="启动哪个模型配置")
     p.add_argument("--no-start", action="store_true", help="只开壳，不自动启动服务")
     p.add_argument("--no-webview", action="store_true", help="用浏览器而不是原生窗口")
+    p.add_argument("--force", action="store_true", help="已经有 Neo 在跑也照开（抢同一批端口，只在清楚后果时用）")
     p.add_argument("--debug", action="store_true", help="打开 pywebview 的调试面板")
     return p.parse_args(argv)
 
@@ -214,17 +288,25 @@ def pick_port(args, adapter) -> int:
 
 
 def run_in_browser(url: str, sup: Supervisor, console: ConsoleServer) -> None:
-    """没有 pywebview（或没有 WebView2）时的路：同一个页面在浏览器里跑。"""
+    """没有 pywebview（或没有 WebView2）时的路：同一个页面在浏览器里跑。
+
+    这条路**没有窗口**，进程在后台一直挂着。实测 2026-10-12：用户看不到窗口，
+    再开一次只看到"已经在运行了"，所以这里要把话说全，并把 mode="browser" 记进
+    neo/state/instance.json，让第二个实例能说出"它没有窗口，界面在浏览器里"。
+    """
     state.log(f"用浏览器界面：{url}")
+    state.record_instance(mode="browser", console_url=url)
     print(f"Neo 控制台：{url}")
-    print("（这个页面就是桌面壳的界面；按 Ctrl+C 结束 Neo）")
+    print("（浏览器界面：没有窗口，页面就是桌面壳的界面；按 Ctrl+C 结束 Neo）")
+    print(f"（跑 Neo 的 Python：{sys.executable}；要原生窗口就给它装 pywebview："
+          "python -m pip install -r neo/requirements-neo.txt）")
     try:
         webbrowser.open(url)
     except Exception:
         pass
     stop_evt = threading.Event()
     try:
-        while not stop_evt.wait(3600):
+        while not stop_evt.wait(2.0):
             pass
     except KeyboardInterrupt:
         pass
@@ -236,13 +318,22 @@ def run_in_browser(url: str, sup: Supervisor, console: ConsoleServer) -> None:
 def main(argv=None) -> int:
     args = parse_args(argv)
     root = safe_resolve(args.root)
-    mutex = acquire_single_instance()
+    mutex = acquire_single_instance(root) if not args.force else 0
     if mutex is None:
-        print("Neo 已经在运行了（用已经开着的那个窗口）。")
+        note = describe_running_instance(root)
+        print("Neo 已经在运行了。")
+        print(note)
+        state.log("第二个实例被单实例互斥体挡住：" + note.replace("\n", " | "))
+        info = state.instance_info()
+        if str(info.get("mode") or "") == "browser" and info.get("console_url"):
+            try:                                    # 没有窗口，就把那个界面再打开一次
+                webbrowser.open(str(info["console_url"]))
+            except Exception:
+                pass
         if sys.platform == "win32":
             try:
                 import ctypes
-                ctypes.windll.user32.MessageBoxW(None, "Neo 已经在运行了。", "Neo Strata", 0x30)
+                ctypes.windll.user32.MessageBoxW(None, note, "Neo Strata", 0x30)
             except OSError:
                 pass
         return 0
@@ -251,8 +342,13 @@ def main(argv=None) -> int:
     port = pick_port(args, adapter)
     sup = Supervisor(adapter, port, host=args.host, api_key=args.api_key, model_id=args.model)
     console = ConsoleServer(sup, host="127.0.0.1", port=args.console_port or None, strata_port=port)
+    shell = Shell(sup, console)
+    console.shell = shell                      # 页面里的"打开聊天页/监控页/日志"走这两个接口
     url = console.start()
-    state.log(f"控制台 {url} · 引擎 {adapter.name} · 端口 {port}")
+    state.record_instance(root=str(root), strata_port=port, console_url=url,
+                          mode="window", engine=adapter.name, version=NEO_VERSION)
+    atexit.register(state.clear_instance)
+    state.log(f"控制台 {url} · 引擎 {adapter.name} · 端口 {port} · 进程 {os.getpid()}")
     if not args.no_start and adapter.discover():
         sup.start()
 
@@ -274,18 +370,14 @@ def main(argv=None) -> int:
     import webview
 
     x, y, w, h = load_geometry()
-    shell = Shell(sup, console)
     profile = state.STATE / "webview-profile"
     profile.mkdir(parents=True, exist_ok=True)
-    kwargs = {"title": "Neo Strata", "url": url, "js_api": shell, "width": w, "height": h,
-              "min_size": (MIN_W, MIN_H), "confirm_close": True}
-    if x >= 0 and y >= 0:
-        kwargs.update({"x": x, "y": y})
+    kwargs = window_kwargs(url, x=x, y=y, w=w, h=h)
     try:
         window = webview.create_window(**kwargs)
     except TypeError as e:                 # pywebview 各版本的窗口参数名不一样
         state.log(f"create_window 不认这些参数（{e}），用最少的参数再试")
-        window = webview.create_window("Neo Strata", url, js_api=shell, width=w, height=h)
+        window = webview.create_window("Neo Strata", url, width=w, height=h)
     shell.window = window
     closing = threading.Event()
 

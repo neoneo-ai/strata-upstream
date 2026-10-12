@@ -20,6 +20,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import paths
 from .console_io import clean_line
 from .paths import safe_resolve
 
@@ -29,6 +30,7 @@ STATE = NEO_DIR / "state"
 LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"
 WINDOW = STATE / "window.json"
+INSTANCE = STATE / "instance.json"
 
 MANAGER_LOG = LOGS / "manager.log"
 LOG_MAX = 200_000                           # 反复开关机只增不减：写入前裁到尾部
@@ -74,6 +76,7 @@ STATE = _init_state()
 LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"
 WINDOW = STATE / "window.json"
+INSTANCE = STATE / "instance.json"
 MANAGER_LOG = LOGS / "manager.log"
 
 
@@ -186,17 +189,81 @@ def latest_server_log() -> Path | None:
 
 
 def python_executable(root: Path | None = None) -> str:
-    """跑 Strata 用的 Python：setup.py 建的 .venv 优先，没有就用当前解释器。"""
+    """跑 Strata 用的 Python：setup.py 建的 .venv 优先，没有就用当前解释器。
+
+    exe 里 sys.executable 就是 NeoStrata.exe 自己，拿它当"Python"等于让 Neo
+    一遍遍启动 Neo 自己，所以 exe 跑时只认 .venv 与系统里的 python，找不到就把话说清。
+    """
     root = Path(root) if root else ROOT
     for cand in (root / ".venv" / "Scripts" / "python.exe", root / ".venv" / "bin" / "python"):
         if cand.exists():
             return str(cand)
-    return sys.executable
+    if not paths.is_frozen():
+        return sys.executable
+    import shutil
+    for name in ("python", "python3"):
+        found = shutil.which(name)
+        if found:
+            return str(found)
+    raise FileNotFoundError(
+        "没找到跑 Strata 用的 Python：这个 exe 需要 Strata 目录里的 .venv"
+        f"（{root / '.venv'}）—— 在 Strata 目录跑一次 START-HERE.bat 就有了")
 
 
 def launcher_config() -> dict:
     cfg = read_json(LAUNCHER, {}) or {}
     return cfg if isinstance(cfg, dict) else {}
+
+
+# ---------------- 正在跑的这一个实例（第二个实例要说清它在哪儿） ----------------
+def record_instance(**changes) -> dict:
+    """记下"现在有一个 Neo 在跑"：pid / root / 端口 / 界面地址 / 是窗口还是浏览器。
+
+    第二个实例撞上单实例互斥体时，靠这份文件告诉用户"在跑的那个"的进程号、
+    界面地址、以及它到底有没有窗口 —— 只说"已经在运行了"是不够的，
+    浏览器界面那条路根本没有窗口（实测：用户看不到窗口，只看到这句话）。
+    """
+    info = instance_info()
+    info.update({k: v for k, v in changes.items() if v is not None})
+    info["pid"] = os.getpid()
+    try:
+        write_json(INSTANCE, info)
+    except OSError:
+        pass                                # 状态目录在只读介质里：不影响 Neo 跑
+    return info
+
+
+def instance_info() -> dict:
+    cfg = read_json(INSTANCE, {}) or {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def clear_instance() -> None:
+    """退出时把这份记录抹掉，别留下一个"看着还在跑"的假现场。"""
+    try:
+        INSTANCE.unlink()
+    except OSError:
+        pass
+
+
+def instance_alive(info: dict | None = None) -> bool:
+    """记录里那个进程还活着吗（Windows 用 OpenProcess 问，不发消息、不碰它）。"""
+    info = instance_info() if info is None else info
+    try:
+        pid = int(info.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        return True                        # 非 Windows 不做进程存在性检查
+    import ctypes
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return False
+    ctypes.windll.kernel32.CloseHandle(h)
+    return True
 
 
 def save_launcher_config(**changes) -> dict:

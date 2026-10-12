@@ -58,6 +58,8 @@ button.hidden, .hidden { display: none; }
 .pill.running { color: var(--ok); border-color: #2c5c42; }
 .pill.starting, .pill.restarting { color: var(--warn); border-color: #5a4a25; }
 .pill.halted { color: var(--err); border-color: #5c2f2f; }
+/* 端口上有一个脚本先起来的服务：也是"在跑"，颜色与运行中一致，文字里说清是谁启动的 */
+.pill.external { color: var(--ok); border-color: #2c5c42; }
 
 /* ---------- 卡片 ---------- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }

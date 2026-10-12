@@ -15,6 +15,8 @@
   2. 上游自己会重启引擎（serve/server.py 的 StrataEngine.restart / #344），那只显示一条提示，
      Neo 不干预 —— 模型重载由上游负责，Neo 只管 serve/server.py 这个进程。
   3. 端口上已经有一个活着的服务（比如用户先用 START-HERE.bat 起来了），Neo 认下它、不重复启动。
+     Neo 没有自己进程的那段时间也一直在盯这个端口：端口上有活着的服务，状态页就说
+     "运行中（外部启动）"（external），日志页指向它的日志 —— 不能写"未启动"。
 
 退避与熔断的默认值（5s / 15s / 45s，10 分钟窗口内最多 3 次）与参考实现
 ComfyUI-Neo-Nodes 的桌面壳一致，测试里可以调小。
@@ -31,14 +33,15 @@ from collections import deque
 from . import jobobj, state
 
 #: 状态取值
-IDLE, STARTING, RUNNING, RESTARTING, STOPPING, HALTED = (
-    "idle", "starting", "running", "restarting", "stopping", "halted")
+IDLE, STARTING, RUNNING, RESTARTING, STOPPING, HALTED, EXTERNAL = (
+    "idle", "starting", "running", "restarting", "stopping", "halted", "external")
 
 BACKOFF_S = (5.0, 15.0, 45.0)      # 第 1/2/3 次重启前等多久
 WINDOW_S = 600.0                   # 数重启次数的窗口：10 分钟
 MAX_RESTARTS = 3                   # 窗口内最多自动重启几次，超过就熔断
 POLL_S = 1.0                       # 看子进程还活着没有
 PROBE_S = 2.0                      # 问 /health 的间隔
+WATCH_S = 2.0                      # 没有自己的进程时，多久看一眼端口上的外部服务
 
 #: 日志里出现这些话时，给用户一句能照着做的解释（措辞对齐 docs/TROUBLESHOOTING.md）
 DIAGNOSIS = (
@@ -69,7 +72,7 @@ class Supervisor:
     def __init__(self, adapter, port: int, host: str = "127.0.0.1", api_key: str = "",
                  model_id: str = "", backoff=BACKOFF_S, window_s: float = WINDOW_S,
                  max_restarts: int = MAX_RESTARTS, poll_s: float = POLL_S,
-                 probe_s: float = PROBE_S, on_event=None):
+                 probe_s: float = PROBE_S, watch_s: float = WATCH_S, on_event=None):
         self.adapter = adapter
         self.port = int(port)
         self.host = host
@@ -80,6 +83,7 @@ class Supervisor:
         self.max_restarts = int(max_restarts)
         self.poll_s = float(poll_s)
         self.probe_s = float(probe_s)
+        self.watch_s = float(watch_s)
         self.on_event = on_event
 
         self._lock = threading.RLock()
@@ -91,6 +95,7 @@ class Supervisor:
         self._log_path = ""
         self._last_probe = 0.0
         self._probe = {}
+        self._external = {}                       # 端口上别人启动的那个服务（探到的）
         self._ready_deadline = 0.0
 
         self.state = IDLE
@@ -166,8 +171,17 @@ class Supervisor:
         with self._lock:
             proc_alive = self._proc is not None and self._proc.poll() is None
             probe = dict(self._probe)
+            # 端口上有一个活着的服务、Neo 手里没有进程（脚本先起来的，或熔断后用户自己
+            # 起来的）：状态页要说"运行中（外部启动）"，不能写"未启动"。
+            external_live = bool(self._external.get("healthy")) and not proc_alive
+            display = self.state
+            if external_live and self.state in (IDLE, STOPPING, HALTED):
+                display = EXTERNAL
             return {
                 "state": self.state,
+                "display_state": display,
+                "external": external_live,
+                "neo_pid": os.getpid(),
                 "intent": self.intent,
                 "engine": self.adapter.name,
                 "model": (self._plan.model if self._plan else "") or "",
@@ -313,8 +327,18 @@ class Supervisor:
             try:
                 self._plan = self.adapter.plan(self.port, self.host, self.api_key, self.model_id)
                 self._log_path = self._plan.log_path
-            except (FileNotFoundError, RuntimeError):
+            except (FileNotFoundError, RuntimeError) as e:
                 self._plan = None
+                self.diag = str(e)
+            # 接手的是脚本先起来的服务：它一直在写的是配置里 log 键那个文件（实测 2026-10-12
+            # 在 D:\Work\Strata：strata-swift-iq3_xxs.json 的 log 指向
+            # D:\Work\Strata\strata-swift-iq3_xxs.log，5.1 MB 还在长）。Neo 自己的
+            # server-*.log 里一个字节都没有，日志页指到那儿就是空的（用户的原话是
+            # "日志没有看到"）。
+            external_log = self.adapter.log_path_for(self.model_id)
+            if external_log:
+                self._log_path = external_log
+            self._external = {}
         self._note(f"接手已在运行的服务：{probe.get('model')}（端口 {self.port}）")
         return True
 
@@ -345,7 +369,12 @@ class Supervisor:
                         self._note(f"服务就绪：{probe.get('model')}"
                                    f" · 上下文 {probe.get('max_context')}")
                 elif st == RUNNING and proc is None:
-                    misses += 1
+                    # /health 一时不答不等于服务没了：服务正在生成时 GIL 被占满，
+                    # 几秒不答是常态。只有端口真的不听了才算"接手的服务不见了"。
+                    # 实测 2026-10-12 在 D:\Work\Strata：run-swift-iq3_xxs.bat 起的服务在
+                    # 8080 上跑得好好的，6 秒里 3 次 /health 没答就被判成不见了，
+                    # Neo 接着把它重启了一遍（用户看到的就是"状态不对"）。
+                    misses = misses + 1 if not self.adapter.listening(self.port) else 0
             if proc is None and misses >= 3:
                 return {"code": None, "at": time.time(), "reason": "接手的服务不见了",
                         "tail": self.tail(4000)}
@@ -388,18 +417,53 @@ class Supervisor:
                 return False
         return True
 
+    def _watch_external(self) -> bool:
+        """Neo 手里没有进程时盯端口：端口上有一个活着的服务（脚本先起来的），状态页
+        就要说"运行中（外部启动）"，日志页指向它的日志，点启动时认下它。
+
+        实测 2026-10-12 在 D:\\Work\\Strata：run-swift-iq3_xxs.bat 起的服务在 8080 上
+        正常应答 /health，Neo 熔断之后状态页写"未启动"、日志页是空的 —— 用户的话是
+        "我感觉已经启动了，只是日志没有看到，状态也不对"。
+
+        回 True：该回主循环（intent 要 run）；回 False：用户要它停着，线程收尾。
+        """
+        while True:
+            with self._lock:
+                if self.intent == "stop":
+                    self._external = {}
+                    return False
+                if self._proc is not None and self._proc.poll() is None:
+                    return True
+            probe = self.adapter.probe(self.port, self.api_key)
+            with self._lock:
+                self._probe = probe
+                self._external = probe if probe.get("healthy") else {}
+                if self._external:
+                    self.state = EXTERNAL
+                    self.adopted_pid = self.adopted_pid or jobobj.listener_pid(self.port)
+                    external_log = self.adapter.log_path_for(self.model_id)
+                    if external_log:
+                        self._log_path = external_log
+            self._sleep(self.watch_s)
+
     def _loop(self) -> None:
         while True:
             with self._lock:
-                if self.intent != "run":
+                intent = self.intent
+            if intent != "run":
+                with self._lock:
                     self.state = IDLE
+                if not self._watch_external():
                     return
-                self._wake.clear()
             if not self._adopt():
                 if not self._launch():
                     with self._lock:
                         self.state = HALTED
-                    return
+                    # 起不来（配置缺东西）也要继续盯端口：端口上可能有一个脚本起来的
+                    # 服务在跑，说"未启动"是骗人的
+                    if not self._watch_external():
+                        return
+                    continue
             exit_info = self._monitor()
             if exit_info is None:
                 continue

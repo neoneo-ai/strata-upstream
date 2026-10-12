@@ -2,3 +2,6 @@
 state/
 __pycache__/
 *.pyc
+# 打包产物（python -m neo.build_exe 打出来的）：不进仓库
+dist/
+build/

@@ -1,11 +1,12 @@
 """neo/tests/test_ui.py - 窗口线程不被挂住：闸门不排队、日志常态只追加、
-UI 看门狗能把卡住的线程现场写进日志。
+UI 看门狗能把卡住的线程现场写进日志、点击路径不经过 js_api。
 
 对应实测的卡死路子（pywebview 6.2.1，WinForms + WebView2）：
   - platforms/edgechromium.py:225 on_script_notify 在窗口线程上跑，里面的 print 走
     neo 的 stdout 闸门；闸门排队等锁 = 窗口线程挂住。
   - platforms/edgechromium.py:137 evaluate_js 用 Invoke 把结果同步投递给窗口线程；
-    窗口线程收不到消息，所有 js_api 调用就都不返回。
+    窗口线程收不到消息，所有 js_api 调用就都不返回 —— 一次点击就卡住后面每一次。
+    现在窗口不挂 js_api，页面只发 HTTP（TestClickPathIsHttpOnly 盯着这条）。
   - 窗口线程跑 Python 委托要抢 GIL，长时间握着 GIL 的纯 Python 段都会让它停住
     （以前 state.log() 每条日志都把整个尾部读出来清洗再整份回写，就是这种段）。
 """
@@ -138,7 +139,7 @@ class TestLogStaysCheap(StateDirBase):
             state.LOG_MAX = saved
 
     def test_log_is_thread_safe(self):
-        """pywebview 每个 js_api 调用一个线程，日志并发写不能互相咬。"""
+        """监督线程、服务请求线程、看门狗探针线程并发写日志不能互相咬。"""
         def worker(tag):
             for i in range(15):
                 state.log(f"{tag}-{i}")
@@ -180,10 +181,11 @@ class TestUiWatchdog(unittest.TestCase):
             stop = ui_watchdog.start(StalledWindow(), interval_s=0.05, stall_s=0.2)
             text = ""
             deadline = time.monotonic() + 8.0
+            # 线程现场是"没应答"那行之后一条条追加的：只等第一行会出现读到半截的日志
             while time.monotonic() < deadline:
                 if state.MANAGER_LOG.exists():
                     text = state.MANAGER_LOG.read_text(encoding="utf-8")
-                    if "没应答" in text:
+                    if "没应答" in text and "neo-ui-probe" in text:
                         break
                 time.sleep(0.05)
             stop.set()
@@ -217,6 +219,35 @@ class TestUiWatchdog(unittest.TestCase):
             self.assertGreater(win.calls, 3)
         finally:
             state.LOGS, state.MANAGER_LOG = logs, manager
+
+
+class TestClickPathIsHttpOnly(unittest.TestCase):
+    """点击路径上不能有 pywebview 的 js_api（实测 2026-10-12："一点就卡死"）。
+
+    js_api 一次点击要窗口线程两次收消息：收页面的 PostWebMessageAsJson
+    （platforms/edgechromium.py:225，在窗口线程上），方法返回后 evaluate_js 再用
+    Invoke + semaphore 把结果同步投回窗口线程（edgechromium.py:137）。窗口线程一停，
+    第一次点击的 promise 永不返回，脚本消息队列堵住，后面每次点击都排在它后面。
+    现在窗口只是容器，页面只发 HTTP 到控制台服务。
+    """
+
+    def test_window_kwargs_has_no_js_api(self):
+        from neo.manager import window_kwargs
+        kwargs = window_kwargs("http://127.0.0.1:8083/", x=10, y=20, w=1200, h=800)
+        self.assertNotIn("js_api", kwargs, "挂上 js_api 就是把点击交回窗口线程")
+        self.assertEqual(kwargs["url"], "http://127.0.0.1:8083/")
+        self.assertEqual((kwargs["x"], kwargs["y"]), (10, 20))
+        self.assertNotIn("x", window_kwargs("http://127.0.0.1:8083/", x=-1, y=-1),
+                         "窗口跑掉到屏幕外时不写坐标")
+
+    def test_page_never_touches_the_pywebview_bridge(self):
+        js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        # 只看代码，注释里提到 js_api 是解释为什么不用它
+        code = "\n".join(ln.split("//")[0] for ln in js.splitlines())
+        self.assertNotIn("window.pywebview", code, "页面不许调 js_api")
+        self.assertNotIn("js_api", code)
+        for route in ("/neo/open", "/neo/open-log"):
+            self.assertIn(route, js, f"页面点开的动作要有服务接口：{route}")
 
 
 if __name__ == "__main__":

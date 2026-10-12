@@ -242,6 +242,30 @@ Python 线程当前停在哪一帧（`sys._current_frames()`）逐行写进 `neo
 （页面每 2 秒一次 HTTP 轮询）：日志里 0 次"没应答"，进程 `Responding=True`；测试里把
 `evaluate_js` 挂住，日志里立刻出现"没应答"和 `neo-ui-probe` 停在哪一帧。
 
+## 聊天页与监控页是空白的（已修）
+
+窗口里点"聊天"/"监控"，内嵌框是一块 1062x677 的空白；状态页的胶囊写着"未启动"，
+而 8080 上的服务在正常应答（`/health` 200、`/neo/status` 200）。
+
+实测 2026-10-12 在真开的窗口里（pywebview 6.2.1 / WebView2，页面 `http://127.0.0.1:8083/`）：
+页面的资源列表里只有 `style.css`、`icon.svg`、`app.js` 三条，**一次 `/neo/status` 都没有** ——
+页面根本没开始轮询。原因在 `neo/web/app.js`：`num()` 的函数体只写了开头就断了，从 `render`
+到所有按钮接线全落进它的身体里，文件末尾那句 `poll()` 成了 `ReferenceError`，`last` 永远是
+null，`ensureFrame()` 直接 return，两个内嵌框的 `src` 就停在 `about:blank`。行首缩进看不出
+这种损坏（被吞掉的代码本来就顶格写），花括号深度能看出来。
+
+修法是补上 `num()` 的闭合，接线与轮询回到顶层。修完在同一个探针下重测（源码跑
+`--engine strata --no-start`，控制台 8084，服务是 8080 上那个在跑的）：`/neo/status` 每 2 秒
+一次（200，2 ms）、状态胶囊"运行中"、聊天框 `src=http://127.0.0.1:8080/`、监控框
+`src=http://127.0.0.1:8080/#monitor`，5 秒后两个框都是 1062x677、内页是跨源文档。
+同一个 iframe 在 Edge 无头截图里渲染出完整的 Strata 监控页（Speed / VRAM / PCIe 卡片与
+请求表都在）；`127.0.0.1:8080` 不发 `X-Frame-Options` 也不发 CSP，内嵌不被挡。
+
+回归测试：`neo/tests/test_ui.py` 的 `TestAppJsTopLevelWiring` 用花括号深度扫描
+（`js_depth_lines`，跳过注释、字符串、模板串与正则字面量）盯 `render`、`poll`、`ensureFrame`、
+`num` 在顶层，文件末尾的 `poll();` 与 `setInterval(poll, 2000);` 在顶层，花括号配平。
+把 `num()` 的闭合去掉，这几条立刻红。
+
 ## 打成 exe（`NeoStrata.exe`）
 
 ```
@@ -264,6 +288,13 @@ python -m neo.build_exe --dest D:\Work\Strata
 - **exe 里打 pywebview 与它的 WinForms 后端**（spec 里的 `collect_submodules("webview")`：
   pywebview 按平台在运行时挑后端，这些导入 PyInstaller 看不见）和控制台页面 `neo/web/`
   （运行时从解包目录读，`paths.web_dir()`）。
+- **打包环境里没装 pywebview 就拒绝打包**：缺包时 `collect_submodules("webview")` 是空列表，
+  PyInstaller 一声不响地打成功，出来的 exe 没有窗口。实测 2026-10-12 19:58 部署的 exe
+  自己的日志：`pywebview 不可用（No module named 'webview'），退回浏览器界面` —— 用户那边
+  看不到任何界面。`neo/build_exe.py` 现在先查这一关，缺了就报"先装上：
+  `python -m pip install -r neo/requirements-neo.txt`"；确实只要浏览器界面就加 `--no-webview`。
+  实测两种打包：装了 pywebview **13.2 MB**（`webview.*` 73 个模块进包，含
+  `webview.platforms.edgechromium` 与 `winforms`），没装 **8.8 MB**。
 - **exe 是窗口版（`console=False`），没有控制台**：QuickEdit 那条路直接绕开（见"怎么起来"）。
   窗口版里 `sys.stdout` / `sys.stderr` 是 `None`，`console_io.NullStream` 接住它们，
   所有输出走 `neo/state/logs/manager.log`。
@@ -285,7 +316,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
 ```
 
 77 个测试，39.9 秒（Windows，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 12 个共 5.2 秒，其余 43 个 34.7 秒）：
+不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 19 个共 5.2 秒，其余 55 个 34.7 秒）：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词。
@@ -300,12 +331,15 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
   浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
-- `test_ui`（12 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+- `test_ui`（19 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
   `window_kwargs()` 里没有 `js_api`（有坐标才写 `x`/`y`）、`app.js` 代码里不出现
-  `window.pywebview` 且带 `/neo/open`、`/neo/open-log` 两条路由。
+  `window.pywebview` 且带 `/neo/open`、`/neo/open-log` 两条路由；**`app.js` 的花括号配平且
+  `render`/`poll`/`ensureFrame`/`num` 在顶层、末尾的 `poll();` 与 `setInterval(poll, 2000);`
+  在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**打包环境缺 pywebview 时
+  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`。
 - `test_logging`（18 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
   输出有界、说明折叠与丢弃了多少、正常输出不被改；`clean_line` 行为、`install()` 幂等；

@@ -28,11 +28,12 @@ offers the same steps as tools.
 pages). It talks to Strata only through existing CLI flags, env vars and HTTP endpoints, and keeps all its own state
 under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules, the single-instance rules and
 its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one windowed `NeoStrata.exe` with
-`python -m neo.build_exe` (spec `neo/NeoStrata.spec`); the exe is meant to sit in a Strata root directory and uses
-that directory as its root. Its tests need no GPU: `python -m unittest neo.tests.test_supervisor
-neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console neo.tests.test_logging
-neo.tests.test_ui` (89 tests, 143.6 s on Windows / Python 3.13, using `serve/server.py --engine mock`). Neo's own
-packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
+`python -m neo.build_exe` (spec `neo/NeoStrata.spec`), with pywebview installed in the build env - the build refuses
+without it, because the exe would silently lose its window and open only a browser page; the exe is meant to sit in a
+Strata root directory and uses that directory as its root. Its tests need no GPU: `python -m unittest
+neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
+neo.tests.test_logging neo.tests.test_ui` (96 tests, 143.1 s on Windows / Python 3.13, using
+`serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 ## Contributing a change or report
 

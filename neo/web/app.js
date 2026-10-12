@@ -71,7 +71,8 @@ function pill(el, state) {
 }
 
 function num(v, digits = 1) {
-
+  return (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(digits).replace(/\.0$/, "");
+}
 
 // ---------------- 状态页 ----------------
 function render(s) {
@@ -159,11 +160,6 @@ $("btn-refresh").onclick = poll;
 $("btn-start").onclick = async () => { const s = await act("start"); if (s) render(s); };
 $("btn-stop").onclick = async () => { const s = await act("stop"); if (s) render(s); };
 $("btn-retry").onclick = async () => { const s = await act("retry"); if (s) render(s); };
-
-  return (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(digits).replace(/\.0$/, "");
-}
-
-
 
 // ---------------- 模型页 ----------------
 async function loadModels() {

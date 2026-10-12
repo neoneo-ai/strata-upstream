@@ -29,12 +29,28 @@ def pyinstaller_available() -> bool:
     return importlib.util.find_spec("PyInstaller") is not None
 
 
-def build(dest: str | Path = "", quiet: bool = False) -> Path:
-    """跑 PyInstaller，把 NeoStrata.exe 放到 dest（默认仓库根）。回 exe 的路径。"""
+def pywebview_available() -> bool:
+    """打包环境里有没有 pywebview。"""
+    import importlib.util
+    return importlib.util.find_spec("webview") is not None
+
+
+def build(dest: str | Path = "", quiet: bool = False, allow_no_webview: bool = False) -> Path:
+    """跑 PyInstaller，把 NeoStrata.exe 放到 dest（默认仓库根）。回 exe 的路径。
+
+    打包环境里没有 pywebview 就拒绝打包：spec 里的 collect_submodules("webview") 在
+    缺包时是空列表，PyInstaller 一声不响地打成功，出来的 exe 起来就退回浏览器界面 ——
+    用户看不到任何窗口。实测 2026-10-12 19:58 部署的 NeoStrata.exe 自己的日志：
+    "pywebview 不可用（No module named 'webview'），退回浏览器界面"。
+    """
     neo_dir = safe_resolve(Path(__file__).parent)
     root = neo_dir.parent
     if not pyinstaller_available():
         raise SystemExit("打包要 pyinstaller：python -m pip install pyinstaller")
+    if not pywebview_available() and not allow_no_webview:
+        raise SystemExit("打包要 pywebview：缺了它打出来的 exe 没有窗口，双击只会开一个浏览器页。\n"
+                         "先装上：python -m pip install -r neo/requirements-neo.txt\n"
+                         "确实只要浏览器界面（不要原生窗口）就加 --no-webview 再来一次。")
 
     dist = neo_dir / "dist"
     work = neo_dir / "build"
@@ -55,15 +71,18 @@ def build(dest: str | Path = "", quiet: bool = False) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(built, target)
     if not quiet:
-        print(f"{target}  {(target.stat().st_size / 1_048_576):.1f} MB")
+        print(f"{target}  {(target.stat().st_size / 1_048_576):.1f} MB  "
+              f"{'有窗口（pywebview 在包里）' if pywebview_available() else '浏览器界面（exe 里没有 pywebview）'}")
     return target
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="把 Neo 打包成 NeoStrata.exe")
     p.add_argument("--dest", default="", help="exe 放哪（默认仓库根）")
+    p.add_argument("--no-webview", action="store_true",
+                   help="打包环境里没有 pywebview 也要打（出来的 exe 没有窗口，只有浏览器界面）")
     args = p.parse_args(argv)
-    build(args.dest)
+    build(args.dest, allow_no_webview=args.no_webview)
     return 0
 
 

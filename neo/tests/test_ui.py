@@ -250,5 +250,182 @@ class TestClickPathIsHttpOnly(unittest.TestCase):
             self.assertIn(route, js, f"页面点开的动作要有服务接口：{route}")
 
 
+def js_depth_lines(text: str) -> list[int]:
+    """app.js 每一行开头的花括号深度。跳过注释、字符串、模板串与正则字面量。
+
+    返回的第 k 项就是第 k 行（从 0 数）行首的深度。测试用它盯"顶层"这件事：
+    一个函数体的花括号漏了，后面整段顶层代码就落进它的身体里，行首缩进看不出来，
+    深度能看出来。
+    """
+    depths = [0]
+    depth = 0
+    i, n = 0, len(text)
+    prev = ""                                   # 上一个代码字符（判断这里是正则还是除法）
+    REGEX_AFTER = "=(,:[!&|?{};+-*%~^<>"
+
+    def nl(from_i: int, to_i: int) -> None:     # 跳过多行字面量时保持行号对齐
+        for k in range(from_i, to_i):
+            if text[k] == "\n":
+                depths.append(depth)
+
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            depths.append(depth)
+            i += 1
+        elif ch == "/" and text[i + 1:i + 2] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif ch == "/" and text[i + 1:i + 2] == "*":
+            j = text.find("*/", i + 2)
+            end = n if j < 0 else j + 2
+            nl(i, end)
+            i = end
+        elif ch in "'\"":
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            nl(i, min(j + 1, n))
+            prev = ch
+            i = min(j + 1, n)
+        elif ch == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                if text[j] == "\\":
+                    j += 2
+                elif text[j] == "$" and text[j + 1:j + 2] == "{":
+                    inner, k = 1, j + 2
+                    while k < n and inner:
+                        if text[k] == "{":
+                            inner += 1
+                        elif text[k] == "}":
+                            inner -= 1
+                        k += 1
+                    nl(j, k)
+                    j = k
+                else:
+                    j += 1
+            nl(i, min(j + 1, n))
+            prev = "`"
+            i = min(j + 1, n)
+        elif ch == "/" and (not prev or prev in REGEX_AFTER):
+            j = i + 1
+            while j < n and text[j] != "/":
+                j += 2 if text[j] == "\\" else 1
+            j += 1
+            while j < n and text[j].isalpha():
+                j += 1                            # 正则的 flags：/x/gi
+            nl(i, min(j, n))
+            prev = "/"
+            i = min(j, n)
+        elif ch in "{}":
+            depth += 1 if ch == "{" else -1
+            prev = ch
+            i += 1
+        else:
+            if not ch.isspace():
+                prev = ch
+            i += 1
+    depths.append(depth)
+    return depths
+
+
+class TestAppJsTopLevelWiring(unittest.TestCase):
+    """app.js 里 render / poll / ensureFrame 必须在顶层。
+
+    实测 2026-10-12 在真开的窗口里（pywebview 6.2.1 / WebView2，页面 http://127.0.0.1:8083/）：
+    num() 的花括号漏了一个，从 render 到所有按钮接线全落进 num 的身体里，文件末尾那句
+    poll() 就成了 ReferenceError —— 页面的资源列表里一次 /neo/status 都没有，状态胶囊
+    停在"未启动"，聊天与监控两个内嵌框的 src 停在 about:blank（1062x677 的空白框）。
+    行首缩进看不出这种损坏（被吞掉的代码本来就顶格写），花括号深度能看出来。
+    """
+
+    TOP_LEVEL = ("function render(", "async function poll(", "function ensureFrame(",
+                 "function num(", "async function loadModels(", "async function loadLog(",
+                 "async function loadConfig(", "function pill(", "function note(")
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.lines = self.js.splitlines()
+        self.depths = js_depth_lines(self.js)
+
+    def test_braces_balance(self):
+        self.assertEqual(self.depths[-1], 0, "app.js 的花括号没配平")
+        self.assertTrue(all(d >= 0 for d in self.depths), "花括号在某一行变成了负数")
+
+    def test_key_functions_are_top_level(self):
+        for name in self.TOP_LEVEL:
+            hits = [k for k, ln in enumerate(self.lines) if ln.lstrip().startswith(name)]
+            self.assertTrue(hits, f"app.js 里找不到 {name}")
+            for k in hits:
+                self.assertEqual(self.depths[k], 0,
+                                 f"{name} 不在顶层：第 {k + 1} 行，深度 {self.depths[k]}")
+
+    def test_poll_is_started_at_top_level(self):
+        """文件末尾的 poll() 与两个 setInterval 要在顶层：那是页面唯一的活口。"""
+        for needle in ("poll();", "setInterval(poll, 2000);"):
+            hits = [k for k, ln in enumerate(self.lines) if ln.strip() == needle]
+            self.assertTrue(hits, f"app.js 里没有 {needle}")
+            self.assertTrue(any(self.depths[k] == 0 for k in hits),
+                            f"{needle} 被吞进函数体里了，页面不会开始轮询")
+
+    def test_status_page_needs_the_status_route(self):
+        """轮询要问的那条接口在，页面里的动作接口也在（缺一条就是空页面）。"""
+        for route in ("/neo/status", "/neo/models", "/neo/log", "/neo/config",
+                      "/neo/open", "/neo/open-log"):
+            self.assertIn(route, self.js, f"页面少了 {route}")
+
+
+class TestBuildNeedsPywebview(unittest.TestCase):
+    """打包环境缺 pywebview 时，build_exe 要当场拒绝，不能打出一个没有窗口的 exe。
+
+    实测 2026-10-12 19:58 部署的 NeoStrata.exe 自己的日志：
+    "pywebview 不可用（No module named 'webview'），退回浏览器界面" —— 打包时
+    collect_submodules("webview") 是空列表，PyInstaller 一声不响地打成功，用户那边
+    就看不到任何窗口（聊天页/监控页只能在浏览器里看）。
+    """
+
+    def setUp(self):
+        from neo import build_exe
+        self.build_exe = build_exe
+        self._pw = build_exe.pywebview_available
+        self._pi = build_exe.pyinstaller_available
+        self._build = build_exe.build
+
+    def tearDown(self):
+        self.build_exe.pywebview_available = self._pw
+        self.build_exe.pyinstaller_available = self._pi
+        self.build_exe.build = self._build
+
+    def test_build_refuses_without_pywebview(self):
+        self.build_exe.pywebview_available = lambda: False
+        with self.assertRaises(SystemExit) as got:
+            self.build_exe.build(quiet=True)
+        note = str(got.exception)
+        self.assertIn("pywebview", note)
+        self.assertIn("requirements-neo.txt", note)
+
+    def test_no_webview_flag_is_what_the_user_asks_for(self):
+        """加 --no-webview 时不拦 pywebview 这一关：走到下一个检查（pyinstaller）。"""
+        self.build_exe.pywebview_available = lambda: False
+        self.build_exe.pyinstaller_available = lambda: False
+        with self.assertRaises(SystemExit) as got:
+            self.build_exe.build(quiet=True, allow_no_webview=True)
+        self.assertIn("pyinstaller", str(got.exception))
+
+    def test_cli_flag_reaches_build(self):
+        """--no-webview 要真的传到 build(allow_no_webview=True)，默认是拦住的。"""
+        seen = []
+
+        def fake_build(dest="", quiet=False, allow_no_webview=False):
+            seen.append(allow_no_webview)
+            return Path("NeoStrata.exe")
+
+        self.build_exe.build = fake_build
+        self.build_exe.main(["--no-webview"])
+        self.build_exe.main([])
+        self.assertEqual(seen, [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from neo import connectors, netprobe                                          # noqa: E402
+
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 28080
 CONSOLE = PORT + 3
 
@@ -60,6 +62,33 @@ def main() -> int:
                                   ensure_ascii=False))
     print("模型列表：", [m["id"] for m in get("/neo/models")["models"]])
     print("日志尾部：", get("/neo/log?tail=2000")["text"].strip().splitlines()[-1][:70])
+
+    # 接入页的四条只读接口。GET 不许写任何人的配置文件，这里逐条核对。
+    paths = {a: connectors.config_path(a) for a in connectors.AGENTS}
+    snapshot = {a: (p.stat().st_mtime if p.is_file() else None) for a, p in paths.items()}
+    net = get("/neo/net", timeout=20)
+    print("下载源：", " / ".join(netprobe.describe(net)))
+    lan = get("/neo/lan")
+    print("局域网：", json.dumps({k: lan[k] for k in ("host", "base", "api_key_masked", "lan_open")},
+                               ensure_ascii=False))
+    print("        ", lan["note"], "|", lan["firewall_hint"] or "（环回，不需要防火墙）")
+    con = get("/neo/connect")
+    print("接入：", con["base"], "模型", con["model"], "上下文", con["context"],
+          "有 key =", con["has_api_key"])
+    for c in con["recipes"]:
+        print(f"  {c['agent']}：{c['config_path']} 命令={' '.join(c['command'])[:60]} "
+              f"unset={len(c['unset'])} 项")
+    wz = get("/neo/wizard")
+    print("向导：", wz["command"])
+    print("      ", [f"{s['name']}={'OK' if s['ok'] else '—'}" for s in wz["steps"]],
+          "就绪 =", wz["ready"], "在跑 =", wz["run"]["running"])
+    for agent, path in paths.items():
+        now = path.stat().st_mtime if path.is_file() else None
+        if now != snapshot[agent]:
+            print(f"FAIL：GET 接口动了 {path}")
+            shell.kill()
+            return 1
+    print("OK：四条只读接口都没写任何配置文件")
 
     print("杀掉桌面壳（模拟被任务管理器结束）...")
     shell.kill()

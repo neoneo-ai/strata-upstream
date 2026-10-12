@@ -24,6 +24,13 @@ from neo import console_io, state                                # noqa: E402
 from neo.paths import MAX_DEPTH, is_reparse, safe_resolve        # noqa: E402
 
 
+class _TtyStream(io.StringIO):
+    """假装自己是控制台（isatty 为真），闸门就该包它。"""
+
+    def isatty(self) -> bool:
+        return True
+
+
 class StateDirBase(unittest.TestCase):
     """把 state 的日志落点换到临时目录，不碰 neo/state/。"""
 
@@ -117,6 +124,32 @@ class TestConsoleGate(unittest.TestCase):
         self.assertIn("第 19 行", out)      # 预算用完前写出的最后一行
         self.assertNotIn("第 499 行", out)  # 超预算的行被丢掉并计入说明
 
+    def test_one_print_block_passes_whole(self):
+        """一次 print 的 40 行（CLI 的 JSON、接入块）不被裁成半截。"""
+        sink = io.StringIO()
+        gate = console_io.BoundedStream(sink, line_max=100, rate_per_s=20, dup_window_s=0.0)
+        block = "".join(f"第 {i} 行\n" for i in range(40))
+        gate.write(block)
+        gate.flush()
+        out = sink.getvalue()
+        self.assertNotIn("丢弃", out)
+        self.assertIn("第 0 行", out)
+        self.assertIn("第 39 行", out)
+        self.assertEqual(len([x for x in out.split("\n") if x.startswith("第")]), 40)
+
+    def test_burst_allowance_is_also_capped(self):
+        """整块放行不是免检：一秒内两块 40 行，第二块超出额度照样丢。"""
+        sink = io.StringIO()
+        gate = console_io.BoundedStream(sink, line_max=100, rate_per_s=20, dup_window_s=0.0,
+                                        burst_lines=30)
+        gate.write("".join(f"A{i}\n" for i in range(40)))
+        gate.write("".join(f"B{i}\n" for i in range(40)))
+        gate.flush()
+        out = sink.getvalue()
+        self.assertIn("A0", out)
+        self.assertIn("丢弃", out)
+        self.assertNotIn("B39", out)
+
     def test_normal_output_untouched(self):
         sink = io.StringIO()
         gate = console_io.BoundedStream(sink, rate_per_s=1000)
@@ -138,6 +171,7 @@ class TestConsoleGate(unittest.TestCase):
         real_out, real_err = sys.stdout, sys.stderr
         first = None
         try:
+            sys.stdout, sys.stderr = _TtyStream(), _TtyStream()
             console_io.install()
             first = sys.stdout
             console_io.install()
@@ -146,6 +180,18 @@ class TestConsoleGate(unittest.TestCase):
         finally:
             sys.stdout, sys.stderr = real_out, real_err
         self.assertIsInstance(first, console_io.BoundedStream)
+
+    def test_install_leaves_a_pipe_alone(self):
+        """输出被重定向（管道、文件、测试里的 StringIO）时不包闸门：闸门按行裁，
+        实测把 python -m neo.connect --json 的 30 行 JSON 丢掉 26 行，页面拿到半截。"""
+        real_out, real_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+            console_io.install()
+            self.assertNotIsInstance(sys.stdout, console_io.BoundedStream)
+            self.assertNotIsInstance(sys.stderr, console_io.BoundedStream)
+        finally:
+            sys.stdout, sys.stderr = real_out, real_err
 
 
 class TestBoundedTraceback(unittest.TestCase):

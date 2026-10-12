@@ -16,6 +16,9 @@ const ROUTES = {
   config: ["GET", "/neo/config"], start: ["POST", "/neo/start"], stop: ["POST", "/neo/stop"],
   retry: ["POST", "/neo/retry"], set_model: ["POST", "/neo/model"], save_config: ["POST", "/neo/config"],
   open_page: ["POST", "/neo/open"], open_log: ["POST", "/neo/open-log"],
+  lan: ["GET", "/neo/lan"], token: ["POST", "/neo/token"], net: ["GET", "/neo/net"],
+  connect: ["GET", "/neo/connect"], connect_write: ["POST", "/neo/connect"],
+  wizard: ["GET", "/neo/wizard"], wizard_run: ["POST", "/neo/wizard"],
 };
 
 function note(text) {
@@ -62,6 +65,7 @@ function showPage(name) {
   if (name === "logs") loadLog();
   if (name === "models") loadModels();
   if (name === "settings") loadConfig();
+  if (name === "connect") loadConnect();
 }
 document.querySelectorAll(".tab").forEach((t) => t.onclick = () => showPage(t.dataset.page));
 
@@ -254,6 +258,148 @@ $("set-save").onclick = async () => {
   setTimeout(() => { $("set-note").textContent = ""; }, 8000);
 };
 
+// ---------------- 接入页（M3：局域网 / token / agent；M2：安装向导） ----------------
+async function copyText(text) {
+  // WebView2 里 navigator.clipboard 要安全上下文；窗口是 http://127.0.0.1，
+  // 算安全上下文，但运行时缺权限时照样会 reject，所以两条路都留着。
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* 走兜底 */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+let lanData = null;
+
+function renderLan(lan) {
+  lanData = lan;
+  $("lan-note").textContent = lan.note || "—";
+  $("lan-loopback").textContent = lan.loopback_base || "—";
+  $("lan-bases").textContent = (lan.lan_bases || []).join("  ") ||
+    (lan.lan_open ? "没找到局域网地址（这台机器没连上网？）" : "未开放局域网");
+  $("lan-key").textContent = lan.has_api_key ? lan.api_key_masked
+    : "没设（只绑本机时不需要）";
+  $("lan-firewall").textContent = lan.firewall_hint || "不需要（没绑局域网）";
+}
+
+function renderAgents(data) {
+  const box = $("agents");
+  box.innerHTML = "";
+  (data.recipes || []).forEach((r) => {
+    const card = document.createElement("div");
+    card.className = "agent";
+    const head = document.createElement("div");
+    head.className = "agent-head";
+    const title = document.createElement("span");
+    title.className = "name";
+    title.textContent = r.title;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = `${r.base} · 模型 ${r.model}` +
+      (r.context ? `（${r.context.toLocaleString()} 上下文）` : "") +
+      (data.has_api_key ? "" : " · 服务没设 token");
+    head.append(title, meta);
+    const pre = document.createElement("pre");
+    pre.className = "cmd";
+    pre.textContent = (r.powershell || []).join("\n");
+    const row = document.createElement("div");
+    row.className = "row";
+    const copy = document.createElement("button");
+    copy.textContent = "复制命令";
+    copy.onclick = async () => {
+      const ok = await copyText((r.powershell || []).join("\n"));
+      copy.textContent = ok ? "已复制" : "复制失败";
+      setTimeout(() => { copy.textContent = "复制命令"; }, 4000);
+    };
+    const write = document.createElement("button");
+    write.textContent = "写进配置";
+    write.title = `合并进 ${r.config_path}（现有的先备份成 .neo-bak）`;
+    write.onclick = async () => {
+      const res = await act("connect_write", { agent: r.agent });
+      if (!res) return;
+      write.textContent = res.ok ? "已写入" : "没写";
+      if (res.notes && res.notes.length) note(res.notes.join("；"));
+      setTimeout(() => { write.textContent = "写进配置"; }, 6000);
+    };
+    row.append(copy, write);
+    card.append(head, pre, row);
+    box.append(card);
+  });
+}
+
+function renderWizard(w) {
+  const box = $("wizard-steps");
+  box.innerHTML = "";
+  (w.steps || []).forEach((s) => {
+    const line = document.createElement("div");
+    line.className = "step" + (s.ok ? " ok" : " warn");
+    line.textContent = `${s.ok ? "✓" : "—"} ${s.name}：${s.text}`;
+    box.append(line);
+  });
+  $("wizard-cmd").textContent = "命令：" + (w.command || "");
+  $("wizard-log").textContent = w.log_tail || "（还没有安装日志）";
+  $("wizard-run").disabled = !!(w.run && w.run.running);
+  $("wizard-run").textContent = (w.run && w.run.running) ? "安装中…" : "开始安装";
+}
+
+async function loadConnect() {
+  const [lan, conn, wizard] = await Promise.all([
+    api("lan"), api("connect"), api("wizard"),
+  ]);
+  if (lan && !lan.error) renderLan(lan);
+  if (conn && !conn.error) renderAgents(conn);
+  if (wizard && !wizard.error) renderWizard(wizard);
+}
+
+$("lan-token").onclick = async () => {
+  const res = await act("token");
+  if (!res) return;
+  note(res.note);
+  const lan = await api("lan");
+  if (lan && !lan.error) renderLan(lan);
+};
+$("lan-copy-base").onclick = async () => {
+  const ok = await copyText((lanData && lanData.base) || "");
+  $("lan-copy-base").textContent = ok ? "已复制" : "复制失败";
+  setTimeout(() => { $("lan-copy-base").textContent = "复制服务地址"; }, 4000);
+};
+$("lan-copy-fw").onclick = async () => {
+  const ok = await copyText((lanData && lanData.firewall_hint) || "");
+  $("lan-copy-fw").textContent = ok ? "已复制" : "复制失败";
+  setTimeout(() => { $("lan-copy-fw").textContent = "复制防火墙命令"; }, 4000);
+};
+$("wizard-refresh").onclick = async () => {
+  $("wizard-refresh").textContent = "探测中…";
+  const r = await fetch("/neo/net?fresh=1", { headers: { accept: "application/json" } });
+  const w = await api("wizard");
+  if (w && !w.error) renderWizard(w);
+  $("wizard-refresh").textContent = "重新探测网络";
+};
+$("wizard-run").onclick = async () => {
+  const res = await act("wizard_run", {});
+  if (!res) return;
+  note(res.started ? "安装已在后台跑，输出进 neo/state/logs/wizard.log"
+                   : (res.notes || []).join("；"));
+  setTimeout(async () => { const w = await api("wizard"); if (w && !w.error) renderWizard(w); }, 3000);
+};
+$("wizard-copy").onclick = async () => {
+  const ok = await copyText($("wizard-cmd").textContent.replace(/^命令：/, ""));
+  $("wizard-copy").textContent = ok ? "已复制" : "复制失败";
+  setTimeout(() => { $("wizard-copy").textContent = "复制安装命令"; }, 4000);
+};
+
 poll();
+
 setInterval(poll, 2000);
 setInterval(() => { if ($("page-logs").classList.contains("on")) loadLog(); }, 5000);

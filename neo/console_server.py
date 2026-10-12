@@ -19,7 +19,18 @@ psutil / sentencepiece / huggingface-hub / safetensors / jinja2），装新包�
     GET  /neo/config  POST /neo/config
     GET  /neo/log?tail=N       服务日志尾部
     GET  /neo/events           监督的事件时间线
+
+M2/M3 加的（默认没人点就什么都不发生，读接口不写任何文件）：
+
+    GET  /neo/net              下载源探测（huggingface / 镜子 / ModelScope 的连通与时延）
+    GET  /neo/lan              局域网与 token 现状（地址、有没有 key、防火墙命令）
+    POST /neo/token            生成一把 token 并交给服务（写 launcher.json）
+    GET  /neo/connect          四个 agent 的接入配方（env / 要清空的变量 / 命令）
+    POST /neo/connect          把一个 provider 写进 agent 的配置文件（先备份 .neo-bak）
+    GET  /neo/wizard           安装向导现状（缺什么、建议的源、命令、日志尾部）
+    POST /neo/wizard           跑 setup.py（后台线程，输出进 neo/state/logs/wizard.log）
 """
+
 from __future__ import annotations
 
 import json
@@ -172,6 +183,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"path": sup.status()["log_path"], "text": sup.tail(tail, 600)})
         elif path == "/neo/config":
             self._json(200, self.server.public_config())
+        elif path == "/neo/net":
+            self._json(200, self.server.net_info(fresh="fresh=1" in urlsplit(self.path).query))
+        elif path == "/neo/lan":
+            self._json(200, self.server.lan_info())
+        elif path == "/neo/connect":
+            self._json(200, self.server.connect_recipes())
+        elif path == "/neo/wizard":
+            self._json(200, self.server.wizard_status())
         else:
             self._json(404, {"error": "not found"})
 
@@ -199,6 +218,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, sup.set_model(model))
         elif path == "/neo/config":
             self._json(200, self.server.apply_config(body))
+        elif path == "/neo/token":
+            self._json(200, self.server.make_token())
+        elif path == "/neo/connect":
+            self._json(200, self.server.connect_write(str(body.get("agent") or "")))
+        elif path == "/neo/wizard":
+            self._json(200, self.server.wizard_run(body))
         elif path in ("/neo/open", "/neo/open-log"):
             self._shell_action("open_page" if path == "/neo/open" else "open_log", body)
         else:
@@ -281,6 +306,13 @@ class ConsoleServer:
         httpd.allowed_hosts = self.allowed_hosts
         httpd.public_config = self.public_config
         httpd.apply_config = self.apply_config
+        httpd.net_info = self.net_info
+        httpd.lan_info = self.lan_info
+        httpd.make_token = self.make_token
+        httpd.connect_recipes = self.connect_recipes
+        httpd.connect_write = self.connect_write
+        httpd.wizard_status = self.wizard_status
+        httpd.wizard_run = self.wizard_run
         httpd.shell = self.shell
         self.httpd = httpd
         self.port = httpd.server_address[1]
@@ -321,6 +353,84 @@ class ConsoleServer:
         if "host" in changes:
             self.supervisor.host = str(changes["host"])
         return self.public_config()
+
+    # ---- M2/M3：探测、局域网、token、接入、向导 ----
+    # 读接口（net / lan / connect / wizard）不写任何文件；写动作只有
+    # POST /neo/token（launcher.json）、POST /neo/connect（agent 的配置，先备份）、
+    # POST /neo/wizard（跑 setup.py，输出进 wizard.log）。
+    def root_dir(self):
+        return getattr(self.supervisor.adapter, "root", None) or paths.app_dir().parent
+
+    def net_info(self, fresh: bool = False) -> dict:
+        from . import netprobe
+        return netprobe.probe_cached(force=bool(fresh))
+
+    def lan_info(self) -> dict:
+        from . import tokens
+        return tokens.token_status(self.supervisor.port, self.supervisor.host,
+                                   self.supervisor.api_key)
+
+    def make_token(self) -> dict:
+        """生成一把 token，写进 launcher.json 并交给监督（下一次启动服务带上）。"""
+        from . import state, tokens
+        key = tokens.new_key()
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        tokens.remember_key(base, key, "minted")
+        state.save_launcher_config(api_key=key)
+        self.supervisor.api_key = key
+        return {"ok": True, "api_key": key, "api_key_masked": tokens.mask_of(key),
+                "note": "已写进 neo/state/launcher.json 并交给监督：正在跑的那个服务"
+                        "还按启动时的设置认，点一次\"停止\"再\"启动\"就按这把 key 认"}
+
+    def _model_for_connect(self):
+        from . import connectors
+        adapter = self.supervisor.adapter
+        items = []
+        try:
+            items = adapter.discover()
+        except OSError:
+            pass
+        wanted = str(self.supervisor.model_id or "")
+        cfg = next((x for x in items if x["id"] == wanted), None) if wanted else None
+        cfg = cfg or (items[0] if items else None)
+        if cfg is None:
+            return connectors.Model(wanted or "qwen3.8-flash-next", 0)
+        return connectors.Model.from_config(cfg)
+
+    def connect_recipes(self, agent: str = "") -> dict:
+        """四个 agent 的接入配方。key 用服务现在那把；没设 key 就回空串并说清楚。"""
+        from . import connectors, tokens
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        key = str(self.supervisor.api_key or "")
+        model = self._model_for_connect()
+        names = [agent] if agent in connectors.AGENTS else list(connectors.AGENTS)
+        recipes = [connectors.recipe(name, base, key, model) for name in names]
+        return {"base": base, "model": model.id, "context": model.context,
+                "has_api_key": bool(key), "lan": self.lan_info(), "recipes": recipes}
+
+    def connect_write(self, agent: str) -> dict:
+        from . import connectors, tokens
+        if agent not in connectors.AGENTS:
+            return {"ok": False, "error": f"不认识的 agent：{agent}"}
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        key = str(self.supervisor.api_key or "")
+        result = connectors.write_config(agent, base, key, self._model_for_connect())
+        return {"ok": bool(result.get("written")), "agent": agent, **result}
+
+    def wizard_status(self) -> dict:
+        from . import wizard
+        return wizard.status(self.root_dir(), port=self.supervisor.port,
+                             host=self.supervisor.host, api_key=self.supervisor.api_key)
+
+    def wizard_run(self, body: dict) -> dict:
+        from . import wizard
+        return wizard.run_setup(self.root_dir(),
+                                model=str(body.get("model") or ""),
+                                port=self.supervisor.port,
+                                host=self.supervisor.host,
+                                api_key=self.supervisor.api_key,
+                                source=str(body.get("source") or ""),
+                                wait=False)
 
 
 def partial_handler(console: ConsoleServer):

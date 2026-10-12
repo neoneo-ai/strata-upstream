@@ -15,6 +15,7 @@
   <button class="tab" data-page="chat">聊天</button>
   <button class="tab" data-page="monitor">监控</button>
   <button class="tab" data-page="logs">日志</button>
+  <button class="tab" data-page="connect">接入</button>
   <button class="tab" data-page="settings">设置</button>
   <div class="nav-foot"><span id="nav-state" class="pill idle">未启动</span></div>
 </aside>
@@ -111,6 +112,47 @@
       <button id="log-open">用记事本打开</button>
     </div>
     <pre id="log-body" class="log"></pre>
+  </section>
+
+  <section id="page-connect" class="page">
+    <div class="panel">
+      <h3>局域网与 token</h3>
+      <table>
+        <tr><th>状态</th><td id="lan-note">—</td></tr>
+        <tr><th>本机地址</th><td id="lan-loopback" class="path">—</td></tr>
+        <tr><th>局域网地址</th><td id="lan-bases" class="path">—</td></tr>
+        <tr><th>token</th><td id="lan-key">—</td></tr>
+        <tr><th>防火墙</th><td id="lan-firewall" class="path">—</td></tr>
+      </table>
+      <div class="row">
+        <button id="lan-token" class="primary">生成 token</button>
+        <button id="lan-copy-base">复制服务地址</button>
+        <button id="lan-copy-fw">复制防火墙命令</button>
+      </div>
+      <p class="muted">绑定地址在「设置」页改（0.0.0.0 = 也听局域网）。绑了局域网就必须有
+         token：这台机器上任何网页都能连这个端口。生成 token 后要点「停止」再「启动」，
+         正在跑的服务才会按这把 key 认。</p>
+    </div>
+
+    <div class="panel">
+      <h3>编码 agent 一键接入</h3>
+      <div id="agents" class="agents"></div>
+      <p class="muted">命令里已经带上服务地址、token 与模型 id。Claude Code 只靠环境变量；
+         Codex / OpenCode / OpenClaw 认配置文件，点「写进配置」会先把它现有的配置备份成
+         .neo-bak 再合并（解析不了的文件 Neo 不动）。Neo 不替你启动 agent。</p>
+    </div>
+
+    <div class="panel">
+      <h3>安装向导</h3>
+      <div id="wizard-steps" class="steps"></div>
+      <div class="row">
+        <button id="wizard-refresh">重新探测网络</button>
+        <button id="wizard-run" class="primary">开始安装</button>
+        <button id="wizard-copy">复制安装命令</button>
+      </div>
+      <p class="muted" id="wizard-cmd"></p>
+      <pre id="wizard-log" class="log small"></pre>
+    </div>
   </section>
 
   <section id="page-settings" class="page">

@@ -537,5 +537,50 @@ class TestBuildNeedsPywebview(unittest.TestCase):
         self.assertEqual(seen, [True, False])
 
 
+class TestConnectPage(unittest.TestCase):
+    """接入页（M2/M3）：页面点的每条接口都在服务上，页面里写的 id 都在 HTML 里。
+
+    这类"页面写了 $(\"xxx\") 而 HTML 里没有 xxx"的错，在窗口里是静默的：
+    getElementById 回 null，取 .textContent 抛异常，整段渲染停住，页面看着像没数据。
+    """
+
+    ROUTES = ("/neo/net", "/neo/lan", "/neo/token", "/neo/connect", "/neo/wizard")
+    CSS = (".agents", ".agent", ".cmd", ".steps")
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.html = (ROOT / "neo" / "web" / "index.html").read_text(encoding="utf-8")
+        self.css = (ROOT / "neo" / "web" / "style.css").read_text(encoding="utf-8")
+
+    def test_the_connect_tab_and_page_exist(self):
+        self.assertIn('data-page="connect"', self.html)
+        self.assertIn('id="page-connect"', self.html)
+        self.assertIn('if (name === "connect") loadConnect();', self.js)
+
+    def test_every_route_the_page_calls_is_in_the_routes_table(self):
+        for route in self.ROUTES:
+            self.assertIn(route, self.js, f"页面里没有 {route}")
+            self.assertIn(route, (ROOT / "neo" / "console_server.py")
+                          .read_text(encoding="utf-8"), f"服务里没有 {route}")
+
+    def test_every_id_the_page_touches_is_in_the_html(self):
+        for ident in set(re.findall(r'\$\("([a-zA-Z0-9_-]+)"\)', self.js)):
+            self.assertIn(f'id="{ident}"', self.html,
+                          f"app.js 用了 $(\"{ident}\")，index.html 里没有这个 id")
+
+    def test_the_new_blocks_have_styles(self):
+        for needle in self.CSS:
+            self.assertIn(needle, self.css, f"style.css 里没有 {needle}")
+
+    def test_load_connect_is_top_level(self):
+        depths = js_depth_lines(self.js)
+        hits = [k for k, ln in enumerate(self.js.splitlines())
+                if ln.lstrip().startswith("async function loadConnect(")]
+        self.assertTrue(hits, "app.js 里没有 loadConnect")
+        for k in hits:
+            self.assertEqual(depths[k], 0, "loadConnect 不在顶层")
+
+
 if __name__ == "__main__":
     unittest.main()
+

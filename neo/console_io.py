@@ -28,6 +28,10 @@ import time
 LINE_MAX = 400
 #: 每秒最多写出的行数。
 RATE_PER_S = 30
+#: 一次 write() 里多少行以内算"一整块"。刷屏来自循环里一次一行的写，不是一次
+#: print 打出 40 行的报告（CLI 的 JSON、要粘进终端的接入块）；整块放行，
+#: 每秒放行的整块行数同样有上限（BURST_LINES 行/秒），超了照样丢。
+BURST_LINES = 60
 #: 多久之内连续同样的行算重复。
 DUP_WINDOW_S = 5.0
 
@@ -51,11 +55,12 @@ class BoundedStream:
     """包一层 stdout / stderr。write() 按行走闸门，其余属性透传给真流。"""
 
     def __init__(self, stream, line_max: int = LINE_MAX, rate_per_s: float = RATE_PER_S,
-                 dup_window_s: float = DUP_WINDOW_S):
+                 dup_window_s: float = DUP_WINDOW_S, burst_lines: int = BURST_LINES):
         self._stream = stream
         self._line_max = int(line_max)
         self._rate = float(rate_per_s)
         self._dup_window = float(dup_window_s)
+        self._burst = int(burst_lines)
         self._lock = threading.RLock()
         self._buf = ""
         self._last = ""
@@ -65,6 +70,7 @@ class BoundedStream:
         self._busy = 0
         self._stamp = time.monotonic()
         self._budget = float(rate_per_s)
+        self._burst_budget = float(self._burst)
 
     def __getattr__(self, name):                      # flush / fileno / encoding / ...
         return getattr(self._stream, name)
@@ -86,8 +92,9 @@ class BoundedStream:
             self._buf += text.replace("\r\n", "\n").replace("\r", "\n")
             lines = self._buf.split("\n")
             self._buf = lines.pop()                   # 末尾半行留着，等下一段
+            burst = 1 < len(lines) <= self._burst     # 一次 print 的一整块，见 BURST_LINES
             for line in lines:
-                self._emit(line)
+                self._emit(line, burst)
         finally:
             self._lock.release()
         return len(text)
@@ -107,10 +114,12 @@ class BoundedStream:
     # ---------------- 内部 ----------------
     def _refill(self) -> None:
         now = time.monotonic()
-        self._budget = min(self._rate, self._budget + (now - self._stamp) * self._rate)
+        gap = (now - self._stamp) * self._rate
+        self._budget = min(self._rate, self._budget + gap)
+        self._burst_budget = min(self._burst, self._burst_budget + gap * self._burst / self._rate)
         self._stamp = now
 
-    def _emit(self, line: str) -> None:
+    def _emit(self, line: str, burst: bool = False) -> None:
         line = clean_line(line, self._line_max)
         now = time.monotonic()
         if line == self._last and (now - self._last_at) <= self._dup_window:
@@ -118,12 +127,15 @@ class BoundedStream:
             self._last_at = now
             return
         self._refill()
-        if self._budget < 1.0:
+        if burst and self._burst_budget >= 1.0:
+            self._burst_budget -= 1.0            # 整块放行，从"整块额度"里扣
+        elif self._budget < 1.0:
             self._dropped += 1
             self._last, self._last_at, self._dup = line, now, 0
             return
+        else:
+            self._budget -= 1.0
         self._flush_counters()          # 只在真要写一行之前把攒下的计数说明一次
-        self._budget -= 1.0
         self._stream.write(line + "\n")
         self._last, self._last_at, self._dup = line, now, 0
 
@@ -164,13 +176,28 @@ class NullStream:
         raise OSError("Neo 的 exe 没有控制台")
 
 
+def _is_console(stream) -> bool:
+    try:
+        return bool(stream.isatty())
+    except Exception:                          # 没有 fileno 的流（管道、StringIO）
+        return False
+
+
 def install(line_max: int = LINE_MAX, rate_per_s: float = RATE_PER_S) -> None:
-    """把 sys.stdout / sys.stderr 换成闸门。已经装过就不重复包。"""
+    """把 sys.stdout / sys.stderr 换成闸门。只包真正的控制台，装过就不重复包。
+
+    只包控制台：闸门是按行裁的（RATE_PER_S 行/秒、连续同句折叠），输出被重定向
+    到文件、接进管道、或被测试换成 StringIO 时，这些裁法会把机器要读的整块切碎 ——
+    实测 python -m neo.connect --json 的 30 行 JSON 被丢掉 26 行，页面拿到半截 JSON。
+    控制台被刷满这件事只在控制台上发生，就只在控制台上裁。
+    """
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:                     # 窗口版 exe：没有控制台，吞掉
             setattr(sys, name, NullStream())
-        elif not isinstance(stream, BoundedStream):
+        elif isinstance(stream, BoundedStream):
+            continue
+        elif _is_console(stream):
             setattr(sys, name, BoundedStream(stream, line_max=line_max, rate_per_s=rate_per_s))
 
 

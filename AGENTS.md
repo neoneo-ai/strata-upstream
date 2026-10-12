@@ -30,10 +30,22 @@ under `neo/state/` - it changes no upstream file. Details, the restart/backoff r
 its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one windowed `NeoStrata.exe` with
 `python -m neo.build_exe` (spec `neo/NeoStrata.spec`), with pywebview installed in the build env - the build refuses
 without it, because the exe would silently lose its window and open only a browser page; the exe is meant to sit in a
-Strata root directory and uses that directory as its root. Its tests need no GPU: `python -m unittest
+Strata root directory and uses that directory as its root. Its tests need no GPU, no network and never touch a real
+user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
-neo.tests.test_logging neo.tests.test_ui` (118 tests, 150.1 s on Windows 11 / Python 3.13, using
-`serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
+neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
+neo.tests.test_connectors neo.tests.test_wizard neo.tests.test_connect_api
+neo.tests.test_connect_cli neo.tests.test_manager_cli` (222 tests, 199.2 s on Windows 11 /
+Python 3.13, using `serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in
+`requirements.txt`.
+
+The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
+`huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source, `neo/wizard.py`
+runs `setup.py --yes --no-start` in the background, `neo/tokens.py` mints `sk-neo-<32 hex>` keys and prints LAN
+addresses, and `neo/connectors.py` merges Neo's block into Claude Code / Codex CLI / OpenCode / OpenClaw config
+files (backup to `.neo-bak`, merge never overwrite, unparseable file left untouched). Default stays
+`127.0.0.1` with no API key; every one of these is opt-in and writes nothing until the user asks. CLI:
+`python -m neo.wizard --check`, `python -m neo.connect list`.
 
 ## Contributing a change or report
 

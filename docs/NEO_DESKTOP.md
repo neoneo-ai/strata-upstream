@@ -68,13 +68,18 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口；页面里所有动作的落点，含 `POST /neo/open` / `/neo/open-log` |
 | `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志、`instance.json`），原子写 + `.bak`；exe 里状态落点见 `pick_state_dir()` |
 | `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点 |
-| `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队；`NullStream` 接窗口版里 `sys.stdout` 是 `None` 的情况 |
+| `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；只包 `isatty()` 为真的流，一次 `write()` 里 2–60 行算一整块放行（`BURST_LINES` 行/秒）；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队；`NullStream` 接窗口版里 `sys.stdout` 是 `None` 的情况 |
 | `neo/ui_watchdog.py` | 窗口线程看门狗：`evaluate_js` 探窗口线程，3 秒没回音就把各线程当前所在帧写进日志 |
 | `neo/jobobj.py` | Windows Job Object：Neo 结束时子进程（含引擎、视觉编码器）跟着结束 |
 | `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
-| `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 |
+| `neo/netprobe.py` | 下载源探测：TCP 443 连 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` 并计时，结果缓存；只给建议，不改上游的源选择 |
+| `neo/tokens.py` | key 与绑法：`sk-neo-<32 hex>`、掩码、按 base 缓存的 key、本机局域网地址、防火墙提示命令（只给不执行） |
+| `neo/wizard.py` | 安装向导：四步现状 + 拼 `setup.py --yes --no-start` 命令 + 后台跑并写 `logs/wizard.log` |
+| `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
+| `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
+| `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 118 个测试（见下） |
+| `neo/tests/` | 222 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -120,6 +125,76 @@ GET  /neo/config            POST /neo/config     启动设置（存 neo/state/la
 POST /neo/start /stop /retry /model
 POST /neo/open               {"page":"chat|monitor"} 在浏览器里打开那一页（由壳执行）
 POST /neo/open-log           用系统默认方式打开服务日志
+GET  /neo/net?fresh=1        下载源连通性（TCP 443）与下载源建议；结果缓存在 neo/state/netprobe.json
+GET  /neo/lan                本机局域网地址、可访问的界面地址、防火墙提示、当前 token 状态
+POST /neo/token              {"action":"new|unset|forget"} 生成/取消/删除 key（只回显掩码）
+GET  /neo/connect            四个 agent 的接线配方（读配置，不写）
+POST /neo/connect            {"agent":"claude|codex|opencode|openclaw"} 写配置文件（先备份）
+GET  /neo/wizard             安装向导：现状四步 + 将要执行的 setup.py 命令 + 日志尾部
+POST /neo/wizard             后台执行 setup.py --yes --no-start
+```
+
+## 接入页（M2/M3）：装模型、开局域网、接四个 agent
+
+页面在窗口顶栏的「接入」，命令行是 `python -m neo.wizard` 和 `python -m neo.connect`。
+**默认路径不变**：不写任何用户文件、服务绑 `127.0.0.1`、不带 key；这一页的每一项都要用户点名才动。
+
+### 下载源探测（`neo/netprobe.py`）
+
+对 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` 做 TCP 443 连接计时，结果缓存进
+`neo/state/netprobe.json`（`GET /neo/net?fresh=1` 重测）。实测 2026-10-12 这台 PC（Windows 11，
+家庭网络）：`huggingface.co` 196 ms、`hf-mirror.com` 4052 ms、`www.modelscope.cn` 36 ms，三个都连得上，
+建议保持默认源，`setup.py` 命令里不加 `--source`。
+
+Neo **不改上游的下载源选择**，只在"Hugging Face 连不上而 ModelScope 连得上"时往 `setup.py` 传
+`--source modelscope`；镜像站连得上而 Hugging Face 连不上时只提示 `HF_ENDPOINT`，不换源
+（两边仓库与文件路径不同，换源不是换镜像）。
+
+### 安装向导（`neo/wizard.py`）
+
+四步：环境（根目录与 `setup.py`）→ 模型（`strata-*.json`）→ 网络（探测结论）→ 安全（绑法与 key）。
+"开始安装"跑的是 `python setup.py --yes --no-start [--source ...] [--host ...] [--api-key ...]`，
+输出进 `neo/state/logs/wizard.log`，页面每 5 秒读尾部。`--no-start` 是必须的：服务归监督器起，
+不能让 `setup.py` 自己起一个占住端口。实测 2026-10-12：跑一个打印参数的桩 `setup.py`，
+子进程 4.4 秒（venv 的 python 冷启动），退出码 0，命令行与输出都落在 `wizard.log` 里。
+`--check` 只探测不安装，`--dry-run` 只打印将要执行的命令。
+
+### 局域网与 token（`neo/tokens.py`）
+
+- key 形状 `sk-neo-<32 位 hex>`（`secrets.token_hex(16)`），界面上只显示掩码 `sk-neo-xxxxxxxx…xxxx`。
+- 每个 base 用过的 key 存 `neo/state/key_cache.json`，切绑法时不用重新生成。
+- 绑 `0.0.0.0` 时列出本机局域网地址与 `http://<ip>:<port>` 界面地址，并给一条**只提示不执行**的
+  Windows 防火墙命令（`netsh advfirewall firewall add rule ... port=<端口>`）。
+  绑局域网而不带 key 会被 `wizard.py` 判成"未就绪"，`neo/manager.py` 也会打一行警告。
+
+### 四个 agent 的配方（`neo/connectors.py`）
+
+| agent | 落点 | Neo 写的那一块 |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json` | `env` 里的 `ANTHROPIC_BASE_URL`（**不带 `/v1`**）、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL` 与四个关掉遥测/实验特性的变量 |
+| Codex CLI | `~/.codex/config.toml` + `neo.config.toml` | `[model_providers.neo]`（`base_url` 带 `/v1`、`wire_api = "responses"`、`requires_openai_auth = false`、`stream_idle_timeout_ms = 1200000`）+ `[profiles.neo]` |
+| OpenCode | `~/.config/opencode/opencode.json` | `provider.neo` 用 `@ai-sdk/openai-compatible`，模型 id 带 `neo/` 前缀，输出上限取 `window // 4`（封顶 32000），compaction 预留 `min(max(0.3×window, 4000), 15000)` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `models.providers.neo`（`api = "openai-completions"`）+ `agents.defaults.model.primary = neo/<id>`；顺带把 `memory.search.provider` 设成 `none`、`env.shellEnv.enabled` 设成 `false`，否则它会自己去找真 OpenAI key |
+
+写文件的规矩（`test_connectors.py` 逐条盯着）：
+
+- **合并，不覆盖**：只动 Neo 自己的那一段，用户其余的键原样留着。
+- **写之前先备份**成 `<文件>.neo-bak`；JSON 解析不了的 TOML/JSON 一律**不动文件**，回一条警告。
+- **幂等**：重跑替换 Neo 自己那一段，不叠加重复块；`GET /neo/connect` 只读不写。
+- 目录认 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `XDG_CONFIG_HOME` / `OPENCLAW_HOME`，测试就是靠这四个
+  变量把四个 agent 的配置全落进临时目录，不碰真实用户配置。
+- Claude Code 只认 `--settings` 传进来的 env，`--settings` 不读 `~/.claude`，所以配方里同时给一份
+  PowerShell / POSIX 的 `$env:` / `export` 块。带 key 时要 unset 的 11 个变量列在配方里
+  （`ANTHROPIC_API_KEY`、`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_UNIX_SOCKET`、Foundry/Bedrock/Vertex/
+  AWS/Google Cloud/Mantle 那六个开关及其 base_url/resource）——留着任何一个都会把请求带去真 Anthropic。
+
+命令行示例（实测 2026-10-12，`--key` 显式给出时不读用户配置）：
+
+```
+python -m neo.connect list
+python -m neo.connect claude --port 8080 --key sk-neo-... --model qwen3.8-flash-next
+python -m neo.connect codex --persist --lan
+python -m neo.wizard --check
 ```
 
 ## 模型配置的形状（`strata-*.json`）
@@ -163,12 +238,24 @@ pywebview/pythonnet 的属性链递归日志、`RecursionError` 的消息都是�
 
 | 层 | 上限 | 实测 |
 | --- | --- | --- |
-| 控制台 stdout/stderr（`neo/console_io.py`） | 单行 400 字符、每秒 30 行、5 秒内同样的行折叠成一条计数、控制字符（`\r`、BEL、ANSI 序列）换空格 | 5000 条 36 万字符的 `.SyncRoot` 行（共 18 亿字符）灌进闸门 → 出来 441 字符、2 行、最长行 419 字符、0 个 `\r` |
+| 控制台 stdout/stderr（`neo/console_io.py`） | 单行 400 字符、每秒 30 行、5 秒内同样的行折叠成一条计数、控制字符（`\r`、BEL、ANSI 序列）换空格；只包 `isatty()` 为真的流，一次 `write()` 里 2–60 行算一整块放行 | 5000 条 36 万字符的 `.SyncRoot` 行（共 18 亿字符）灌进闸门 → 出来 441 字符、2 行、最长行 419 字符、0 个 `\r` |
 | `neo/state/logs/manager.log` | 单行裁到 400 字符并标"原长 N 字符"；写入前裁到尾部 200 KB | 同样 5000 条巨行 → 文件 196 KB、454 行、最长行 419 字符、0 个 `\r` |
 | `GET /neo/log` | 一次最多 60 KB / 600 行，行内已裁 | 灌过后应答 539 字符 |
 | 日志页（`neo/web/app.js`） | 一次取 60000 字符、最多渲染 400 行、内容没变不重画 | 页面不再被一条巨行卡死 |
 | `NEO-START.bat` 打印的尾部 | 15 行、控制字符换空格、单行 200 字符 | 实测 15 行、最长 77 字符、中文正常 |
 | 未捕获异常 | traceback 最多 40 行 / 4000 字符；`RecursionError` 不格式化 traceback（上千帧、消息本身几十万字符，格式化它自己要再递归一层），只给一句指向 pywebview 与同步目录的提示 | 90019 字符的异常消息进日志后单行 416 字符 |
+
+**5. 闸门把机器要读的整块裁掉了（已修）。** 闸门按行裁（30 行/秒），`neo/manager.py`
+在 import 时就装它，于是两条实测到的副作用：`python -m neo.connect --json` 的 30 行 JSON
+被丢掉 26 行（页面拿到半截 JSON，`json.loads` 报 "Expecting value: line 31 column 1"）；
+测试里 `redirect_stdout` 换上的 `StringIO` 也被当成控制台包了闸门，unittest 的 traceback
+被折叠成"同样的行重复 N 次"，看不出是哪个测试出的错。现在两条规矩：`install()` 只包
+`isatty()` 为真的流（管道、文件、`StringIO` 一律不包 —— 刷屏只在控制台发生）；一次
+`write()` 里 2–60 行算一整块放行，从"整块额度"（`BURST_LINES` = 60 行/秒）里扣，超了照样丢。
+实测：一次写 40 行全部通过；一秒内两块 40 行，第二块超出额度被丢；500 行一次一行的洪水
+仍压到 120 行以内（`test_logging.py` 的 `test_one_print_block_passes_whole`、
+`test_burst_allowance_is_also_capped`、`test_rate_cap_drops_excess`、
+`test_install_leaves_a_pipe_alone`）。
 
 `.bat` 里读日志用 `Get-Content -Encoding UTF8`：Windows PowerShell 5.1 默认按系统 ANSI
 码页解文件，UTF-8 的中文日志会被解成乱码（实测加 `-Encoding UTF8` 前后对比：
@@ -388,17 +475,28 @@ python -m neo.build_exe --dest D:\Work\Strata
 - 入口是 `neo/neo_entry.py`：`neo/manager.py` 顶部是包内相对导入，PyInstaller 把包里的模块当
   顶层脚本分析时认不出父包，那些导入会被标成"找不到模块"，所以给一个显式 import 包的脚本，
   `pathex` 指到仓库根。
+- **结束进程时它是两个进程**：PyInstaller 的单文件 exe 先跑引导进程，解包后再启动应用进程。
+  实测 2026-10-12：`Stop-Process` 结束引导进程（pid 42780）后应用进程（pid 26312）还在，
+  服务端口 28180 与控制台 28183 都还开着；结束应用进程后两个端口都关了。Neo 的 Job Object
+  管的是 Neo 起的 Strata 服务，管不到这对父子。关窗口（或在窗口里点"停止"再关）走 `atexit`，
+  两个进程都会退；在任务管理器里结束，请把两个 `NeoStrata.exe` 都结束。
 - 打包产物（`NeoStrata.exe`、`neo/dist/`、`neo/build/`）不进仓库（`neo/.gitignore`）。
 
 ## 测试
 
 ```
 python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_supervisor \
-                   neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
+                   neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console \
+                   neo.tests.test_netprobe neo.tests.test_tokens neo.tests.test_connectors \
+                   neo.tests.test_wizard neo.tests.test_connect_api \
+                   neo.tests.test_connect_cli neo.tests.test_manager_cli
 ```
 
-118 个测试，150.1 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型；`test_logging` 22 个、`test_ui` 29 个共 6.1 秒，其余 67 个 144.0 秒）：
+222 个测试，199.2 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置；`test_logging` 25 个 5.0 秒、
+`test_ui` 34 个 1.1 秒、`test_netprobe` 11 个 / `test_tokens` 16 个 / `test_connectors` 26 个 /
+`test_wizard` 13 个 / `test_connect_cli` 8 个 / `test_manager_cli` 12 个共 2.5 秒，
+其余 77 个 191 秒）：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、
@@ -417,7 +515,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
   浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
-- `test_ui`（22 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+- `test_ui`（34 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
@@ -428,12 +526,56 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
   **打包环境缺 pywebview 时
   `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`。
-- `test_logging`（22 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
+- `test_logging`（25 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
-  输出有界、说明折叠与丢弃了多少、正常输出不被改；`clean_line` 行为、`install()` 幂等；
+  输出有界、说明折叠与丢弃了多少、正常输出不被改；**一次 print 的 40 行整块不被裁**（CLI 的 JSON
+  不被切成半截）、**一秒内两块 40 行第二块超出额度要丢**、500 行一次一行的洪水仍压到 120 行以内、
+  **`install()` 只包 `isatty()` 为真的流**（管道与 `StringIO` 不包）且幂等；
+  `clean_line` 行为、
+  `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
   `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
   `safe_resolve` 把 5000 段 `.SyncRoot` 截到 64 段以内、相对路径与 `..` 正常、`is_reparse` 对普通目录回 False；
   `instance.json` 记下/读回/清掉、只补 `mode` 不抹 `root`、进程没了算过期。
+- `test_netprobe`（11 个）：注入的 `connect` 记录地址族/端口/超时，三个目标都走 443；全通建议默认源、
+  HF 断 + ModelScope 通才建议 `--source modelscope`、只有镜像通时只说 `HF_ENDPOINT` 而不换源、
+  全断时不推荐任何源；缓存读写与坏文件回空、`probe_cached` 不联网、`describe` 说得出建议。
+- `test_tokens`（16 个）：key 形状 `sk-neo-` + 32 位 hex 且 100 个不重复、掩码不含完整 key、
+  按 base 缓存命中同一个 key 且文件里存的是明文（界面只回显掩码）、`forget_key` 删了缓存、
+  环回不写防火墙提示而 `0.0.0.0` 写且带端口、`base_for` 认 `0.0.0.0`→本机地址、`looks_like_key`
+  认 `sk-neo-` 与 `sk-` 两种形状。
+- `test_connectors`（26 个）：四个 agent 的落点认 `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_CONFIG_HOME`/
+  `OPENCLAW_HOME`；**合并**（用户的 `permissions` / `[model_providers.other]` / `provider.other` /
+  `models.providers.other` 在 Neo 接线后原样在）；**幂等**（跑两遍 provider 只有一个、块里的值跟着
+  新端口变）；**先备份**（`.neo-bak` 是接线前的内容）；**坏文件不动**（截断的 JSON 报"没动你的文件"、
+  字节一模一样）；Claude 的 base **不带 `/v1`** 且 unset 列表含 `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`、
+  Codex 的 `wire_api = "responses"` 与 `requires_openai_auth = false` 与 profile 层、
+  OpenCode 的 `neo/` 前缀与 `output_limit = 32000`（window 131072）与 compaction 预留、
+  OpenClaw 的 `api = "openai-completions"` 与 `primary = neo/<id>` 与关掉 `memory.search` 和 `shellEnv`；
+  没有 key 时 unset 列表为空并给出"先建 key"的提示；PowerShell 与 POSIX 两块命令都在。
+- `test_wizard`（13 个）：命令是 `setup.py --yes --no-start` 且端口跟着传、`--no-start` 必须在
+  （服务归监督器起）、`--host 0.0.0.0` 才带 `--host` 且带 key、探测到 modelscope 才加 `--source`、
+  用户点名 hf 时不改、源在 `--yes` 之前；四步里"局域网没 key"判成未就绪、没有 `setup.py` 要说出来；
+  真跑一次（临时目录里的桩 `setup.py`）命令行与输出都落进 `logs/wizard.log`、缺 `setup.py` 时不跑。
+- `test_connect_api`（10 个）：`GET /neo/net` 不联网（吃缓存）、`GET /neo/lan` 报出绑法与掩码且
+  环回时没有防火墙提示、`POST /neo/token` 生成的 key 落进 `launcher.json` 而应答里只有掩码、
+  `unset` 清掉 key 且缓存留着、坏 action 回 400；`GET /neo/connect` 四个配方齐且**不写文件**、
+  `POST /neo/connect` 写进临时目录并留备份、坏 agent 回 400；`GET /neo/wizard` 四步齐、
+  `POST /neo/wizard` 在没装好的根目录上回 400 且不起子进程。
+- `test_connect_cli`（8 个）：`list` 说出四个 agent 与各自的配置文件、不认识的 agent 回 2 并列出可选；
+  `--json` 出整份配方（base、env、unset 列表、命令、PowerShell 与 POSIX 两块）且**不建任何目录**、
+  给了 `--key` 就不写 key 缓存；`--base` 压过 `--host`/`--port`（写进 `config.toml` 的 `base_url`
+  用的是它）；key 来源要说出来、服务没设 key 时要提醒；`--persist` 只写临时目录里那两个文件、
+  每个都留 `.neo-bak` 且备份是用户原来那份、跑两遍 `[model_providers.neo]` 只有一块。
+- `test_manager_cli`（12 个）：三个开关都不给 = 老默认（`127.0.0.1`、无 key、不打印）；`--lan` 绑
+  `0.0.0.0`、`--host` 压过 `--lan`、命令行压过 `launcher.json`；`--token` 现生成一把并打印全串、
+  落进 `launcher.json`、**不进 `manager.log`**，已有 key 时不再生成也不打印；端口优先级
+  `--port` > `launcher.json` > 发现的第一条 > 8095；`--connect` 打印的那块含 base、key、
+  `claude --model …`，且**不创建任何 agent 目录**，不认识的 agent 与没有 key 各说一句人话。
+- `test_ui` 里的接入页检查：「接入」页与顶栏 tab 在、页面里写的 `/neo/net` `/neo/lan` `/neo/token`
+  `/neo/connect` `/neo/wizard` 五条路由服务里都有、`app.js` 里每一个 `$("id")` 在 `index.html` 里都有
+  对应的 `id="..."`（这类错在窗口里是静默的：`getElementById` 回 null，取 `.textContent` 抛异常，
+  整段渲染停住，页面看着像没数据）、新样式块 `.agents`/`.agent`/`.cmd`/`.steps` 在 `style.css` 里、
+  `loadConnect` 在顶层。
 
 exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --engine mock` 起窗口 →
 `/neo/status` 到 `running`、`Responding=True`、`neo/state/instance.json` 里 `mode="window"`；
@@ -442,14 +584,30 @@ exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --eng
 `Responding=True`、日志 0 次"没应答"，`POST /neo/open` 与 `/neo/open-log` 都回 200 并真打开了
 页面 / 文件；同一个 exe 放进 `D:\Work\Strata` 跑 `--no-start`，模型页列出 4 个模型。
 
+接入页那五条接口在 exe 里也逐条验过（2026-10-12，`NeoStrata.exe --engine mock --port 28180`，
+控制台 28183）：`/neo/status` `state=running` `healthy=True` `pid=6912`；`/neo/lan` 说"只绑本机
+（127.0.0.1）"、`api_key_masked` 为空、`lan_bases` 给出 `http://172.18.240.1:28180` 与
+`http://192.168.0.165:28180`；`/neo/net` 三个目标都通（huggingface.co 228 ms / hf-mirror.com
+382 ms / www.modelscope.cn 67 ms），建议源 `huggingface`；`/neo/connect` 四个配方齐、
+`base=http://127.0.0.1:28180`、模型 `mock`、上下文 32768；`/neo/wizard` 四步全 OK，命令是
+`...\python.exe ...\setup.py --port 28180 --yes --no-start`。命令行侧 `python -m neo.wizard --check`
+与 `python -m neo.connect list` 在同一台机器上打印完整（闸门不再裁整块，见"日志与控制台输出"第 5 条）。
+
 
 ## 已知边界
 
 - 端口改了要重启 Neo 才生效（M1 不做热切换）。
-- 聊天页与监控页是内嵌上游页面：服务需要 API key 时，iframe 里会要 key（M3 的 token 处理这件事）。
-- 局域网开放、token 生成、Claude Code / Codex 接线在 M3；M1 只绑 127.0.0.1。
-- 未安装模型时显示引导页（根目录没有 `strata-*.json`），M2 会把 `setup.py` 的检查和安装
-  过程搬进这个窗口。
+- 聊天页与监控页是内嵌上游页面：服务需要 API key 时，iframe 里会要 key（「接入」页的"生成 token"
+  就是给这件事用的，key 只在生成那一次完整显示，之后界面上只有掩码）。
+- 局域网开放、token 生成、四个 agent 的接线在「接入」页（见上节）；**默认仍只绑 `127.0.0.1`、不带 key**。
+- 防火墙那条命令**只给不执行**，要用户用管理员权限自己跑；不跑它，局域网里的别的机器连不上。
+- 接线配方写的是 agent 的配置文件，Neo **不看 agent 装没装**：agent 不在时配置文件照样写对，
+  装上就能用；agent 自己改了配置格式（Claude / Codex / OpenCode / OpenClaw 都在快速变动），
+  Neo 认的是参考实现那一份形状，格式变了配方就要跟着改（`test_connectors.py` 盯的就是这一份形状）。
+- 向导跑 `setup.py` 时不流式转发输出，页面每 5 秒读一次 `logs/wizard.log` 尾部；
+  一次只允许一个安装在跑。
+- 未安装模型时显示引导页（根目录没有 `strata-*.json`），「接入」页的安装向导会把 `setup.py` 的
+  检查和安装过程搬进这个窗口。
 - `neo/state/`（运行数据）与 `neo/state.py`（模块）同名：在 `neo/state/` 目录里直接跑脚本时，
   `import neo.state` 会命中那个目录而不是模块（实测 `python neo\state\repro\hook.py` 报
   `AttributeError: module 'neo.state' has no attribute 'install_excepthook'`）。跑 Neo 的代码要在仓库根，

@@ -261,8 +261,13 @@ def parse_args(argv=None):
     p.add_argument("--engine", default="strata", help="引擎适配器：strata（默认）或 mock（测试）")
     p.add_argument("--port", type=int, default=0, help="Strata 服务的端口（默认取配置里的，再默认 8080）")
     p.add_argument("--console-port", type=int, default=0, help="控制台端口（默认 Strata 端口 + 3）")
-    p.add_argument("--host", default="127.0.0.1", help="服务绑定地址（局域网开放在 M3）")
+    p.add_argument("--host", default=None, help="服务绑定地址（0.0.0.0 = 也听局域网，要配 --api-key）")
+    p.add_argument("--lan", action="store_true", help="等价于 --host 0.0.0.0（没给 --host 时生效）")
     p.add_argument("--api-key", default="", help="服务的 API key（透传给 serve/server.py）")
+    p.add_argument("--token", action="store_true",
+                   help="没有 --api-key 时现生成一把并记进 neo/state/launcher.json")
+    p.add_argument("--connect", default="", metavar="AGENT",
+                   help="启动后打印这个 agent 的接入命令（claude / codex / opencode / openclaw）")
     p.add_argument("--model", default="", help="启动哪个模型配置")
     p.add_argument("--no-start", action="store_true", help="只开壳，不自动启动服务")
     p.add_argument("--no-webview", action="store_true", help="用浏览器而不是原生窗口")
@@ -285,6 +290,64 @@ def pick_port(args, adapter) -> int:
     if items and items[0].get("port"):
         return int(items[0]["port"])
     return DEFAULT_STRATA_PORT
+
+
+def resolve_host(args) -> str:
+    """绑定地址：--host > --lan（= 0.0.0.0）> launcher.json > 127.0.0.1。
+
+    默认路径不变：三个都没给就是 127.0.0.1，与 M3 之前的行为逐字节一致。
+    """
+    if args.host:
+        return str(args.host)
+    if getattr(args, "lan", False):
+        return "0.0.0.0"
+    cfg = state.launcher_config()
+    return str(cfg.get("host") or "127.0.0.1")
+
+
+def resolve_api_key(args) -> str:
+    """服务的 key：--api-key > launcher.json > （--token 时现生成一把）。"""
+    if args.api_key:
+        return str(args.api_key)
+    cfg = state.launcher_config()
+    key = str(cfg.get("api_key") or "")
+    if key:
+        return key
+    if getattr(args, "token", False):
+        from . import tokens
+        key = tokens.new_key()
+        state.save_launcher_config(api_key=key)
+        print(f"Neo 生成了一把 token：{key}")
+        print("已记进 neo/state/launcher.json（下次启动还用这把）")
+        return key
+    return ""
+
+
+def print_connect_block(adapter, port: int, host: str, api_key: str,
+                        agent: str, model_id: str = "") -> None:
+    """把某个 agent 的接入命令打印出来（不启动 agent，也不写它的配置）。"""
+    from . import connectors, tokens
+    if agent not in connectors.AGENTS:
+        print(f"--connect：不认识的 agent「{agent}」（可选 {' / '.join(connectors.AGENTS)}）")
+        return
+    items = adapter.discover()
+    cfg = next((x for x in items if x["id"] == model_id), None) if model_id else None
+    cfg = cfg or (items[0] if items else None)
+    model = connectors.Model.from_config(cfg) if cfg else connectors.Model(
+        model_id or "qwen3.8-flash-next", 0)
+    base = tokens.base_for(host, port)
+    key = api_key or ""
+    item = connectors.recipe(agent, base, key, model)
+    lines = item["powershell"] if os.name == "nt" else item["posix"]
+    print(f"== {item['title']} → {base}  模型 {model.id}")
+    if not key:
+        print("   服务现在没设 token：agent 不带 key 也能连（只绑本机时够用）；"
+              "要带 key 就加 --token 启动，或在设置页点\"生成 token\"")
+    print(f"   配置文件：{item['config_path']}（要写进去跑 python -m neo.connect "
+          f"{agent} --persist）")
+    print()
+    for line in lines:
+        print(line)
 
 
 def run_in_browser(url: str, sup: Supervisor, console: ConsoleServer) -> None:
@@ -340,7 +403,9 @@ def main(argv=None) -> int:
 
     adapter = make_adapter(args.engine, root)
     port = pick_port(args, adapter)
-    sup = Supervisor(adapter, port, host=args.host, api_key=args.api_key, model_id=args.model)
+    host = resolve_host(args)
+    api_key = resolve_api_key(args)
+    sup = Supervisor(adapter, port, host=host, api_key=api_key, model_id=args.model)
     console = ConsoleServer(sup, host="127.0.0.1", port=args.console_port or None, strata_port=port)
     shell = Shell(sup, console)
     console.shell = shell                      # 页面里的"打开聊天页/监控页/日志"走这两个接口
@@ -348,7 +413,15 @@ def main(argv=None) -> int:
     state.record_instance(root=str(root), strata_port=port, console_url=url,
                           mode="window", engine=adapter.name, version=NEO_VERSION)
     atexit.register(state.clear_instance)
-    state.log(f"控制台 {url} · 引擎 {adapter.name} · 端口 {port} · 进程 {os.getpid()}")
+    extra = ""
+    if host != "127.0.0.1":
+        extra += f" · 绑定 {host}"
+    if api_key:
+        extra += " · token 已设"
+    state.log(f"控制台 {url} · 引擎 {adapter.name} · 端口 {port} · 进程 {os.getpid()}" + extra)
+    if args.connect:
+        print_connect_block(adapter, port, host, api_key, str(args.connect).lower(),
+                            model_id=args.model)
     if not args.no_start and adapter.discover():
         sup.start()
 

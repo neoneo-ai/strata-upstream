@@ -1,0 +1,112 @@
+/* Neo Strata 控制台：深色、左侧导航、卡片主页。配色跟着 Strata 网页的深色主题走。 */
+:root {
+  --bg: #0f1115; --bg2: #161a21; --bg3: #1d222b; --line: #262c37;
+  --fg: #e6e9ef; --muted: #8b94a5; --accent: #4f9cf9; --ok: #3fb97a;
+  --warn: #e0a43a; --err: #e05757; --idle: #6b7484;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; background: var(--bg); color: var(--fg); font-size: 14px;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+code { background: var(--bg3); padding: 1px 5px; border-radius: 4px; }
+
+/* ---------- 左侧导航 ---------- */
+#nav {
+  width: 168px; flex: 0 0 168px; background: var(--bg2); border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; padding: 12px 10px;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; margin: 4px 6px 16px; }
+.brand img { width: 20px; height: 20px; }
+.tab {
+  background: none; border: 0; color: var(--muted); text-align: left; padding: 9px 10px;
+  border-radius: 7px; cursor: pointer; font-size: 14px;
+}
+.tab:hover { background: var(--bg3); color: var(--fg); }
+.tab.on { background: var(--bg3); color: var(--fg); }
+.nav-foot { margin-top: auto; padding: 10px 6px 0; }
+
+/* ---------- 主区 ---------- */
+main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--bg2);
+}
+.head-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.head-right { display: flex; gap: 8px; }
+.page { display: none; flex: 1; overflow: auto; padding: 18px; flex-direction: column; gap: 16px; }
+.page.on { display: flex; }
+
+/* ---------- 控件 ---------- */
+button {
+  background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+  padding: 7px 13px; cursor: pointer; font-size: 13px;
+}
+button:hover { border-color: #3a4250; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 600; }
+button.hidden, .hidden { display: none; }
+.muted { color: var(--muted); }
+.path { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+
+/* ---------- 状态胶囊 ---------- */
+.pill {
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap;
+  background: var(--bg3); color: var(--idle); border: 1px solid var(--line);
+}
+.pill.running { color: var(--ok); border-color: #2c5c42; }
+.pill.starting, .pill.restarting { color: var(--warn); border-color: #5a4a25; }
+.pill.halted { color: var(--err); border-color: #5c2f2f; }
+
+/* ---------- 卡片 ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.card { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.card .k { color: var(--muted); font-size: 12px; }
+.card .v { font-size: 22px; font-weight: 600; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.card .s { color: var(--muted); font-size: 11px; }
+
+.panel { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.panel h3 { margin: 0 0 10px; font-size: 14px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); font-weight: 400; }
+th { color: var(--muted); width: 92px; }
+
+.events { max-height: 220px; overflow: auto; font-size: 12.5px; }
+.events div { padding: 3px 0; border-bottom: 1px dashed var(--line); display: flex; gap: 10px; }
+.events time { color: var(--muted); flex: 0 0 62px; font-variant-numeric: tabular-nums; }
+.events .warn { color: var(--warn); }
+.events .error { color: var(--err); }
+.events .hint { color: var(--accent); }
+
+.guide { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.guide h2 { margin: 0 0 8px; font-size: 16px; }
+.guide p { margin: 0; color: var(--muted); line-height: 1.7; }
+.diag {
+  background: #2a2118; border: 1px solid #5a4a25; color: #f0d9a8;
+  border-radius: 10px; padding: 12px 14px;
+}
+
+.models { display: flex; flex-direction: column; gap: 8px; }
+.model {
+  display: flex; align-items: center; gap: 12px; background: var(--bg3);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px;
+}
+.model .name { font-weight: 600; }
+.model .meta { color: var(--muted); font-size: 12px; }
+.model.cur { border-color: var(--accent); }
+.model.gone { opacity: .55; }
+
+.frame-bar { display: flex; align-items: center; gap: 8px; }
+.frame-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.frame { flex: 1; min-height: 420px; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.log {
+  flex: 1; min-height: 380px; overflow: auto; background: #0b0d11; border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0;
+}
+label { display: block; margin: 10px 0; color: var(--muted); }
+label input {
+  display: block; margin-top: 4px; width: 280px; background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; font-size: 13px;
+}

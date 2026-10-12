@@ -22,6 +22,15 @@ offers the same steps as tools.
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.
 
+## Neo desktop manager (`neo/`)
+
+`neo/` is an additive desktop layer (window shell, process supervisor, crash auto-restart, status/logs/chat/monitor
+pages). It talks to Strata only through existing CLI flags, env vars and HTTP endpoints, and keeps all its own state
+under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules and its tests:
+**[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Its tests need no GPU: `python -m unittest neo.tests.test_supervisor
+neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console` (33 tests, 32.5 s on Windows / Python 3.13,
+using `serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
+
 ## Contributing a change or report
 
 - Search the open issues and pull requests first, and add to a thread that already covers your point.

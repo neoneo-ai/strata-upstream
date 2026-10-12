@@ -1,0 +1,6 @@
+# Neo 桌面管理器自己的包，由 neo/install_neo.py 装进 Strata 的 .venv。
+# 上游的 requirements.txt 不改：Strata 本身不需要这些包，缺了它们 Neo 也只是退回浏览器界面。
+# Windows 上 pywebview 用 Edge (WebView2) 后端，需要 pythonnet（pip 会一起装）。
+pywebview>=5.4
+# 打包成 exe 时才需要（M4），平时不用装：
+# pyinstaller

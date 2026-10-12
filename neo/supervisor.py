@@ -1,0 +1,412 @@
+"""neo/supervisor.py - 进程监督：启动 Strata 服务、探活、崩溃自动重启、熔断。
+
+状态机：
+
+    idle ──start()──> starting ──/health 应答──> running
+                        │                          │
+                        │ 加载超时                  │ 子进程非预期退出
+                        ▼                          ▼
+                   restarting（退避 5/15/45 秒）<──┘
+                        │
+                        └── 10 分钟内已经重启 3 次 ──> halted（熔断，等人工处理）
+
+三条规则：
+  1. 用户点"停止"（intent=stop）后，任何情况下都不会自动拉起。
+  2. 上游自己会重启引擎（serve/server.py 的 StrataEngine.restart / #344），那只显示一条提示，
+     Neo 不干预 —— 模型重载由上游负责，Neo 只管 serve/server.py 这个进程。
+  3. 端口上已经有一个活着的服务（比如用户先用 START-HERE.bat 起来了），Neo 认下它、不重复启动。
+
+退避与熔断的默认值（5s / 15s / 45s，10 分钟窗口内最多 3 次）与参考实现
+ComfyUI-Neo-Nodes 的桌面壳一致，测试里可以调小。
+"""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+import time
+from collections import deque
+
+from . import jobobj, state
+
+#: 状态取值
+IDLE, STARTING, RUNNING, RESTARTING, STOPPING, HALTED = (
+    "idle", "starting", "running", "restarting", "stopping", "halted")
+
+BACKOFF_S = (5.0, 15.0, 45.0)      # 第 1/2/3 次重启前等多久
+WINDOW_S = 600.0                   # 数重启次数的窗口：10 分钟
+MAX_RESTARTS = 3                   # 窗口内最多自动重启几次，超过就熔断
+POLL_S = 1.0                       # 看子进程还活着没有
+PROBE_S = 2.0                      # 问 /health 的间隔
+
+#: 日志里出现这些话时，给用户一句能照着做的解释（措辞对齐 docs/TROUBLESHOOTING.md）
+DIAGNOSIS = (
+    ("out of memory", "内存不够：把 Windows 的页面文件设成系统管理的大小，或换更小的模型"),
+    ("failed to map", "显存不够：关掉占显存的程序，或换更小的模型"),
+    ("page file", "页面文件被设成了固定大小：改成「系统管理的大小」，重启电脑"),
+    ("already in use", "端口被占用：在设置里换一个端口，或先关掉另一个 Strata 窗口"),
+    ("driver is too old", "显卡驱动太旧：装 NVIDIA 572 以上的驱动"),
+    ("no device", "没找到显卡：确认机器有 NVIDIA 显卡并装了驱动"),
+    ("not enough space", "磁盘空间不够：清出模型需要的大小"),
+    ("no such file", "模型文件不在：重新运行 setup.py 下载模型"),
+    ("Traceback", "服务自己报了错：把下面的日志贴到 GitHub 的 issue"),
+)
+
+
+def diagnose(text: str) -> str:
+    """从一段日志里挑第一条对得上的解释。"""
+    low = (text or "").lower()
+    for needle, advice in DIAGNOSIS:
+        if needle in low:
+            return advice
+    return ""
+
+
+class Supervisor:
+    """监督一个 serve/server.py 进程。所有公开方法都可以从 UI 线程调用。"""
+
+    def __init__(self, adapter, port: int, host: str = "127.0.0.1", api_key: str = "",
+                 model_id: str = "", backoff=BACKOFF_S, window_s: float = WINDOW_S,
+                 max_restarts: int = MAX_RESTARTS, poll_s: float = POLL_S,
+                 probe_s: float = PROBE_S, on_event=None):
+        self.adapter = adapter
+        self.port = int(port)
+        self.host = host
+        self.api_key = api_key
+        self.model_id = model_id
+        self.backoff = tuple(backoff)
+        self.window_s = float(window_s)
+        self.max_restarts = int(max_restarts)
+        self.poll_s = float(poll_s)
+        self.probe_s = float(probe_s)
+        self.on_event = on_event
+
+        self._lock = threading.RLock()
+        self._wake = threading.Event()          # 让退避等待能被"停止"打断
+        self._thread = None
+        self._proc = None
+        self._plan = None
+        self._log_file = None
+        self._log_path = ""
+        self._last_probe = 0.0
+        self._probe = {}
+        self._ready_deadline = 0.0
+
+        self.state = IDLE
+        self.intent = "stop"                    # "run" = 用户要它跑着，"stop" = 用户要它停
+        self.restarts: list[float] = []
+        self.restart_number = 0
+        self.last_exit = None                   # {code, at, expected}
+        self.diag = ""
+        self.started_at = 0.0
+        self.events: deque = deque(maxlen=200)
+        self.adopted_pid = None                 # 接手别人启动的服务时的进程号
+
+    # ---------------- 对外：启动 / 停止 / 重试 / 换模型 ----------------
+    def start(self, model_id: str | None = None) -> dict:
+        """用户点"启动"。intent=run，监督线程跑起来。"""
+        with self._lock:
+            self.intent = "run"
+            if model_id is not None:
+                self.model_id = model_id
+            self.diag = ""
+            if self._thread is None or not self._thread.is_alive():
+                self.state = STARTING if self.adapter.discover() else IDLE
+                self._thread = threading.Thread(target=self._loop, daemon=True, name="neo-supervisor")
+                self._thread.start()
+            self._wake.set()
+        return self.status()
+
+    def stop(self, join_s: float = 10.0) -> dict:
+        """用户点"停止"。intent=stop，之后绝不自动拉起。
+
+        join_s 是等监督线程收尾的时间。页面里点停止走的是 pywebview 的 js_api 线程，
+        等满 10 秒期间页面每 2 秒一次的轮询也拿不到这一条调用的回音（结果要靠
+        evaluate_js 同步投递回 UI 线程），按钮看起来就是按了没反应。桌面壳传一个短的，
+        剩下的收尾由监督线程自己走完，状态页靠轮询更新。
+        """
+        with self._lock:
+            self.intent = "stop"
+            self.state = STOPPING
+        self._kill_proc("用户停止")
+        self._wake.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=join_s)
+        with self._lock:
+            self.state = IDLE
+            self._note("已停止（不会自动重启）")
+        return self.status()
+
+    def retry(self) -> dict:
+        """熔断后的人工"重试"：清空重启计数，重新走一遍启动。"""
+        with self._lock:
+            self.restarts.clear()
+            self.restart_number = 0
+            self.diag = ""
+            self.last_exit = None
+        return self.start()
+
+    def set_model(self, model_id: str) -> dict:
+        """换模型：停掉当前的，用新配置启动。"""
+        with self._lock:
+            self.model_id = model_id
+        self.stop()
+        return self.start()
+
+    def shutdown(self) -> dict:
+        """Neo 退出前收尾：杀掉子进程并结束 Job Object。"""
+        out = self.stop()
+        jobobj.close()
+        return out
+
+    # ---------------- 对外：状态与日志 ----------------
+    def status(self) -> dict:
+        with self._lock:
+            proc_alive = self._proc is not None and self._proc.poll() is None
+            probe = dict(self._probe)
+            return {
+                "state": self.state,
+                "intent": self.intent,
+                "engine": self.adapter.name,
+                "model": (self._plan.model if self._plan else "") or "",
+                "label": (self._plan.label if self._plan else "") or "",
+                "port": self.port,
+                "host": self.host,
+                "pid": (self._proc.pid if proc_alive else self.adopted_pid),
+                "adopted": bool(self.adopted_pid) and not proc_alive,
+                "process_alive": proc_alive,
+                "listening": bool(probe.get("listening")),
+                "healthy": bool(probe.get("healthy")),
+                "loaded": bool(probe.get("loaded")),
+                "served_model": probe.get("model", ""),
+                "max_context": probe.get("max_context", 0),
+                "metrics": probe.get("metrics", {}),
+                "restarts": list(self.restarts),
+                "restart_number": self.restart_number,
+                "max_restarts": self.max_restarts,
+                "backoff": list(self.backoff),
+                "last_exit": self.last_exit,
+                "diagnosis": self.diag,
+                "log_path": self._log_path,
+                "started_at": self.started_at,
+                "events": list(self.events)[-40:],
+                "pages": self.adapter.pages(self.port, self.host),
+                "installed": bool(self.adapter.discover()),
+                "ready_timeout_s": (self._plan.ready_timeout_s if self._plan else 0),
+            }
+
+    def tail(self, max_bytes: int = 120_000, max_lines: int = state.TAIL_LINES) -> str:
+        with self._lock:
+            path = self._log_path
+        return state.tail_text(path, max_bytes, max_lines) if path else ""
+
+    # ---------------- 内部 ----------------
+    def _note(self, text: str, kind: str = "info") -> None:
+        item = {"at": time.time(), "text": text, "kind": kind}
+        self.events.append(item)
+        state.log(f"[{kind}] {text}")
+        if self.on_event:
+            try:
+                self.on_event(item)
+            except Exception:
+                pass
+
+    def _sleep(self, seconds: float) -> bool:
+        """可被"停止"打断的等待。被打断回 True。"""
+        return self._wake.wait(timeout=seconds)
+
+    def _close_log(self) -> None:
+        """子进程结束后关掉它的日志句柄（反复重启不能攒下一堆没关的文件）。"""
+        with self._lock:
+            f = self._log_file
+            self._log_file = None
+        if f is not None:
+            try:
+                f.close()
+            except OSError:
+                pass
+
+    def _kill_proc(self, reason: str) -> None:
+        with self._lock:
+            proc = self._proc
+            self._proc = None
+        if proc is None or proc.poll() is not None:
+            self._close_log()
+            return
+        self._note(f"结束服务进程 {proc.pid}（{reason}）")
+        try:
+            proc.terminate()
+        except OSError:
+            self._close_log()
+            return
+        for _ in range(80):
+            if proc.poll() is not None:
+                self._close_log()
+                return
+            time.sleep(0.1)
+        self._note("进程没响应 terminate，直接 kill", "warn")
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        self._close_log()
+
+    def _launch(self) -> bool:
+        """按计划启动子进程。成功回 True。"""
+        from . import state as _state
+        try:
+            plan = self.adapter.plan(self.port, self.host, self.api_key, self.model_id)
+        except (FileNotFoundError, RuntimeError) as e:
+            with self._lock:
+                self.diag = str(e)
+            self._note(str(e), "error")
+            return False
+        log_path = plan.log_path or str(_state.server_log_path(plan.model))
+        try:
+            head = (f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 启动"
+                    f"（第 {self.restart_number} 次自动重启）=====\n$ {' '.join(plan.argv)}\n")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(head)
+            log = open(log_path, "a", encoding="utf-8", buffering=1)
+        except OSError as e:
+            with self._lock:
+                self.diag = f"日志文件写不了：{e}"
+            self._note(self.diag, "error")
+            return False
+        flags = 0x08000000 if os.name == "nt" else 0        # CREATE_NO_WINDOW
+        try:
+            proc = subprocess.Popen(plan.argv, cwd=plan.cwd, env=plan.env, stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+        except OSError as e:
+            with self._lock:
+                self.diag = f"起不来：{e}"
+            self._note(self.diag, "error")
+            return False
+        in_job = jobobj.contain(proc)
+        with self._lock:
+            self._proc = proc
+            self._plan = plan
+            self._log_file = log
+            self._log_path = log_path
+            self._ready_deadline = time.time() + plan.ready_timeout_s
+            self.started_at = time.time()
+            self.state = STARTING
+            self.adopted_pid = None
+        self._note(f"启动 {plan.label}（端口 {plan.port}，进程 {proc.pid}"
+                   f"{'' if in_job else '，Job Object 没建起来'}）")
+        return True
+
+
+    def _adopt(self) -> bool:
+        """端口上已有活着的服务：认下它，不重复启动。"""
+        probe = self.adapter.probe(self.port, self.api_key)
+        if not probe.get("healthy"):
+            return False
+        with self._lock:
+            self._probe = probe
+            self.state = RUNNING
+            self.adopted_pid = jobobj.listener_pid(self.port)
+            self.started_at = time.time()
+            self._ready_deadline = 0.0
+            try:
+                self._plan = self.adapter.plan(self.port, self.host, self.api_key, self.model_id)
+                self._log_path = self._plan.log_path
+            except (FileNotFoundError, RuntimeError):
+                self._plan = None
+        self._note(f"接手已在运行的服务：{probe.get('model')}（端口 {self.port}）")
+        return True
+
+    def _monitor(self):
+        """盯到进程结束 / 接手的服务消失 / 加载超时。返回退出信息；None = intent 已变。"""
+        misses = 0
+        while True:
+            with self._lock:
+                if self.intent != "run":
+                    return None
+                proc = self._proc
+                deadline = self._ready_deadline
+                st = self.state
+            if proc is not None and proc.poll() is not None:
+                code = proc.returncode
+                with self._lock:
+                    self._proc = None
+                self._close_log()
+                return {"code": code, "at": time.time(), "reason": "", "tail": self.tail(4000)}
+            probe = self.adapter.probe(self.port, self.api_key)
+            with self._lock:
+                self._probe = probe
+                if probe.get("healthy"):
+                    misses = 0
+                    self._ready_deadline = 0.0
+                    if st in (STARTING, RESTARTING):
+                        self.state = RUNNING
+                        self._note(f"服务就绪：{probe.get('model')}"
+                                   f" · 上下文 {probe.get('max_context')}")
+                elif st == RUNNING and proc is None:
+                    misses += 1
+            if proc is None and misses >= 3:
+                return {"code": None, "at": time.time(), "reason": "接手的服务不见了",
+                        "tail": self.tail(4000)}
+            if st in (STARTING, RESTARTING) and deadline and time.time() > deadline:
+                tail = self.tail(4000)
+                self._kill_proc("加载超时")
+                return {"code": None, "at": time.time(), "reason": "加载超时", "tail": tail}
+            self._sleep(self.poll_s)
+
+    def _schedule_restart(self, exit_info) -> bool:
+        """这次非预期退出该不该自动重启。要重启回 True（退避时间已等完）。"""
+        now = time.time()
+        with self._lock:
+            self.restarts = [t for t in self.restarts if now - t < self.window_s]
+            self.restarts.append(now)
+            n = len(self.restarts)
+            self.restart_number = n
+            self.last_exit = {"code": exit_info.get("code"), "at": now,
+                              "reason": exit_info.get("reason", "")}
+        self._note(f"服务退出（{exit_info.get('reason') or '退出码 ' + str(exit_info.get('code'))}）",
+                   "warn")
+        advice = diagnose(exit_info.get("tail", ""))
+        with self._lock:
+            if n > self.max_restarts:
+                self.state = HALTED
+                self.diag = advice or "服务连续崩溃：看日志找原因，或换更小的模型"
+                self._note(f"{self.window_s / 60:.0f} 分钟内自动重启已达 {self.max_restarts} 次，"
+                           f"停止自动重启", "error")
+                return False
+            delay = self.backoff[min(n - 1, len(self.backoff) - 1)]
+            self.state = RESTARTING
+            if advice:
+                self.diag = advice
+                self._note(advice, "hint")
+            self._note(f"{delay:.0f} 秒后自动重启（第 {n}/{self.max_restarts} 次）", "warn")
+        self._sleep(delay)                       # 退避等待；期间用户点"停止"会立刻打断
+        with self._lock:
+            if self.intent != "run":
+                self.state = IDLE
+                return False
+        return True
+
+    def _loop(self) -> None:
+        while True:
+            with self._lock:
+                if self.intent != "run":
+                    self.state = IDLE
+                    return
+                self._wake.clear()
+            if not self._adopt():
+                if not self._launch():
+                    with self._lock:
+                        self.state = HALTED
+                    return
+            exit_info = self._monitor()
+            if exit_info is None:
+                continue
+            with self._lock:
+                if self.intent != "run":
+                    self.state = IDLE
+                    return
+            if not self._schedule_restart(exit_info):
+                return
+

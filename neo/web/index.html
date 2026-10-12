@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neo Strata</title>
+<link rel="icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside id="nav">
+  <div class="brand"><img src="/icon.svg" alt="">Neo Strata</div>
+  <button class="tab on" data-page="status">状态</button>
+  <button class="tab" data-page="models">模型</button>
+  <button class="tab" data-page="chat">聊天</button>
+  <button class="tab" data-page="monitor">监控</button>
+  <button class="tab" data-page="logs">日志</button>
+  <button class="tab" data-page="settings">设置</button>
+  <div class="nav-foot"><span id="nav-state" class="pill idle">未启动</span></div>
+</aside>
+
+<main>
+  <header>
+    <div class="head-left">
+      <span id="state-pill" class="pill idle">未启动</span>
+      <span id="head-model" class="muted"></span>
+    </div>
+    <div class="head-right">
+      <button id="btn-start" class="primary">启动</button>
+      <button id="btn-stop">停止</button>
+      <button id="btn-retry" class="hidden">重试</button>
+      <button id="btn-refresh">刷新</button>
+    </div>
+  </header>
+
+  <section id="page-status" class="page on">
+    <div id="guide" class="guide hidden">
+      <h2>这台机器还没装模型</h2>
+      <p>Neo 是 Strata 的管理器，模型要先装好。在项目文件夹里运行 <code>START-HERE.bat</code>
+         （Windows）或 <code>./setup.sh</code>（Linux），装完回到这个窗口就能启动。</p>
+      <div class="row">
+        <button id="guide-log" class="primary">看安装日志</button>
+        <button id="guide-reload">重新检查</button>
+      </div>
+    </div>
+
+    <div id="diag" class="diag hidden"></div>
+
+    <div class="cards">
+      <div class="card"><div class="k">生成速度</div><div class="v" id="m-toks">—</div><div class="s">tok/s</div></div>
+      <div class="card"><div class="k">解码步长</div><div class="v" id="m-step">—</div><div class="s">ms / 步</div></div>
+      <div class="card"><div class="k">显存</div><div class="v" id="m-vram">—</div><div class="s" id="m-vram-s">已用 / 总量</div></div>
+      <div class="card"><div class="k">内存</div><div class="v" id="m-ram">—</div><div class="s" id="m-ram-s">已用 / 总量</div></div>
+      <div class="card"><div class="k">在跑的请求</div><div class="v" id="m-active">—</div><div class="s" id="m-queued">排队 0</div></div>
+      <div class="card"><div class="k">上下文</div><div class="v" id="m-ctx">—</div><div class="s" id="m-reqs">请求 0</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>服务</h3>
+      <table id="svc">
+        <tr><th>状态</th><td id="s-state">—</td></tr>
+        <tr><th>模型</th><td id="s-model">—</td></tr>
+        <tr><th>端口</th><td id="s-port">—</td></tr>
+        <tr><th>进程</th><td id="s-pid">—</td></tr>
+        <tr><th>自动重启</th><td id="s-restarts">—</td></tr>
+        <tr><th>日志</th><td id="s-log" class="path">—</td></tr>
+      </table>
+      <div class="row">
+        <button id="btn-chat">打开聊天页</button>
+        <button id="btn-monitor">打开监控页</button>
+        <button id="btn-log">打开日志文件</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>发生了什么</h3>
+      <div id="events" class="events"></div>
+    </div>
+  </section>
+
+  <section id="page-models" class="page">
+    <div class="panel">
+      <h3>这台机器上的模型</h3>
+      <div id="models" class="models"></div>
+      <p class="muted">列表来自项目根目录的 strata-*.json，最近用过的排最前。换模型会重启服务。</p>
+    </div>
+  </section>
+
+  <section id="page-chat" class="page">
+    <div class="frame-bar">
+      <span id="chat-url" class="path muted"></span>
+      <button id="chat-reload">重载</button>
+      <button id="chat-open">在浏览器打开</button>
+    </div>
+    <iframe id="chat-frame" class="frame" src="about:blank"></iframe>
+  </section>
+
+  <section id="page-monitor" class="page">
+    <div class="frame-bar">
+      <span id="monitor-url" class="path muted"></span>
+      <button id="monitor-reload">重载</button>
+      <button id="monitor-open">在浏览器打开</button>
+    </div>
+    <iframe id="monitor-frame" class="frame" src="about:blank"></iframe>
+  </section>
+
+  <section id="page-logs" class="page">
+    <div class="frame-bar">
+      <span id="log-path" class="path muted"></span>
+      <button id="log-reload">刷新</button>
+      <button id="log-open">用记事本打开</button>
+    </div>
+    <pre id="log-body" class="log"></pre>
+  </section>
+
+  <section id="page-settings" class="page">
+    <div class="panel">
+      <h3>启动设置</h3>
+      <label>Strata 端口<input id="set-port" type="number" min="1024" max="65535"></label>
+      <label>绑定地址<input id="set-host" type="text" placeholder="127.0.0.1"></label>
+      <label>API key<input id="set-key" type="text" placeholder="留空 = 本机免密钥"></label>
+      <div class="row"><button id="set-save" class="primary">保存</button><span id="set-note" class="muted"></span></div>
+      <p class="muted">端口改了要重启 Neo 才生效。绑定到 0.0.0.0 会让局域网里的人都能用这个模型，
+         那时必须填 API key（局域网开放与接入向导在 M3）。</p>
+    </div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

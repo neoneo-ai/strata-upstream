@@ -79,8 +79,9 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
 | `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
+| `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 305 个测试（见下） |
+| `neo/tests/` | 394 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -303,7 +304,10 @@ KV 显存 = 常驻单元 × 每单元每层字节 × 层数，每单元每层的
 
 语言与主题只在页面里，Neo 与上游都不记：`neo/web/i18n.js` 认 `data-i18n` 键（静态文案整块换）与
 `app.js` 里的 `t("中文")`（动态文案），记忆键 `neo.lang` / `neo.theme` 存在 localStorage 里。
-**没有记忆时页面与以前逐字一样**（中文 + 暗色），i18n.js 不改一处文字。主题只换 CSS 变量：
+**没有记忆时页面与以前逐字一样**（中文 + 暗色），i18n.js 不改一处文字。整个 i18n.js 包在一个 IIFE 里，
+只往外递一个 `window.NEO_I18N`（app.js 取的就是这个命名空间）：`<script src="/i18n.js">` 与
+`<script src="/app.js">` 是同一个全局作用域的两段经典脚本，顶层留名字就会与 app.js 撞名，浏览器解析
+app.js 时整段不跑（见「窗口上任何点击都没反应、状态永远「未启动」」）。主题只换 CSS 变量：
 `style.css` 里 `html[data-theme="light"]` 覆盖 `:root` 那一批变量，组件一律用 `var(--…)`，
 所以换主题不改任何一条组件规则（`neo/tests/test_ui.py` 里有一条量这个：`:root` 与
 `html[data-theme="light"]` 之外的规则里不许出现硬编码颜色）。
@@ -502,6 +506,51 @@ null，`ensureFrame()` 直接 return，两个内嵌框的 `src` 就停在 `about
 `test_ui.py` 的 `TestStatusPageMetricCards`（卡片只经过 `num()` / `count()`，`m.requests`
 这类不许直接嵌进模板串）。
 
+## 窗口上任何点击都没反应、状态永远「未启动」（已修）
+
+用户 2026-10-13 的新 exe：窗口出得来、进程在跑、8080 的服务与 8083 的控制台都在正常应答，
+但状态胶囊一直是「未启动」、六张卡片全是「—」、「发生了什么」是空的，**任何点击都没反应**。
+
+服务端没问题：窗口取到的 `/app.js` 与源码逐字节一致，`/neo/status` 200，HTML 里的 id 与
+`app.js` 里引用的 id 全对得上，也没有全屏遮罩挡点击。问题在页面的 JavaScript。根因是
+**两个 `<script>` 共享同一个全局作用域**：`index.html` 里 `<script src="/i18n.js">` 与
+`<script src="/app.js">` 是两段经典脚本，i18n.js 顶层有 `function t` 与 `function applyLang`，
+app.js 顶层有 `const t` 与 `const applyLang`。浏览器在**解析** app.js 时抛
+`SyntaxError: Identifier 't' has already been declared` —— app.js 一行都不执行：`poll()` 没跑起来
+（状态与卡片停在初始值），`document.querySelectorAll(".tab")` 那一批 onclick 一个都没挂
+（点什么都没反应）。i18n.js 是这次新加的，所以只有新 exe 出现。
+
+为什么 385 条测试全绿、exe 也照打成功：逐文件的语法检查看不见跨文件重名 ——
+`node --check neo/web/i18n.js` 与 `node --check neo/web/app.js` 各自都合法。最小重现
+`function t(){}; const t = 1;` 拼在一个文件里，`node --check` 报的就是浏览器那句原话。
+
+修法：`neo/web/i18n.js` 整个文件包进一个 IIFE，只往外递 `window.NEO_I18N`。app.js 一直是
+`const I18N = window.NEO_I18N || {}` 再 `I18N.t(...)`，取的就是这个命名空间，所以包起来
+不改任何一处文案。实测包之前 i18n.js 顶层 14 个声明，包之后 0 个。
+
+防回归是**打包前的闸门**：`neo/webcheck.py` 按 `index.html` 的加载顺序把页面**当一个程序**查 ——
+花括号配平、跨文件顶层重名、`poll` / `render` / `ensureFrame` 与末尾的 `poll();` 在不在顶层、
+i18n.js 有没有把 `NEO_I18N` 挂到 window；机器上有 node 时把拼接后的整段交给 V8 解析一遍
+（`node --check`），没 node 就跳过这一关并说明跳过。命令行：
+
+```
+python -m neo.webcheck           # 体检 neo/web/，不干净非零退出
+```
+
+`neo/build_exe.py` 在调 PyInstaller 之前先跑它（`web_gate()`），不干净拒绝出包。实测把 i18n.js
+的 IIFE 拆掉再跑闸门，报的是：
+
+```
+- t 在 i18n.js:57 与 app.js:14 的顶层都声明了：同一全局作用域里这是解析期 SyntaxError，app.js 整段不跑
+- applyLang 在 i18n.js:71 与 app.js:15 的顶层都声明了：同一全局作用域里这是解析期 SyntaxError，app.js 整段不跑
+- 页面脚本按加载顺序拼起来 V8 解析不过：SyntaxError: Identifier 't' has already been declared
+```
+
+回归测试：`neo/tests/test_ui.py` 的 `TestWebCheck`（8 个）—— 真树体检干净、闸门放行；拆掉 IIFE
+后闸门拒绝出包并点名撞的两个名字；有 node 时 V8 报的是浏览器那句原话、没 node 时不许假装跑过；
+花括号漏一个要报；顶层的 `poll();` 与 `setInterval(poll` 都没了要报；`<script>` 指的文件不在要报；
+顶层名字要抓到 40 个以上（不然这条检查等于没跑）。
+
 ## 服务在跑，右上角亮的却是「启动」（已修）
 
 用户的话：模型已经启动了，应该是停止。截图里状态胶囊是"运行中"、服务表写"运行中·模型已就绪"，
@@ -575,6 +624,11 @@ python -m neo.build_exe --dest D:\Work\Strata
   `python -m pip install -r neo/requirements-neo.txt`"；确实只要浏览器界面就加 `--no-webview`。
   实测两种打包：装了 pywebview **13.2 MB**（`webview.*` 73 个模块进包，含
   `webview.platforms.edgechromium` 与 `winforms`），没装 **8.8 MB**。
+- **页面脚本体检不过就拒绝出包**（`build_exe.web_gate()` → `neo/webcheck.py`）：页面是这个 exe
+  的全部界面，而逐文件的语法检查看不见跨文件重名。实测 2026-10-13 部署的 exe（13,981,433 字节）
+  就是打成功、装出去、界面是死的（见「窗口上任何点击都没反应、状态永远「未启动」」）。现在
+  `python -m neo.build_exe` 在调 PyInstaller 之前先体检 `neo/web/`，不干净就报出是哪两个文件的
+  哪两行撞了哪个名字，并让人先跑 `python -m neo.webcheck`。
 - **exe 是窗口版（`console=False`），没有控制台**：QuickEdit 那条路直接绕开（见"怎么起来"）。
   窗口版里 `sys.stdout` / `sys.stderr` 是 `None`，`console_io.NullStream` 接住它们，
   所有输出走 `neo/state/logs/manager.log`。
@@ -604,11 +658,11 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_model_settings
 ```
 
-385 个测试，合起来跑 289.3 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+394 个测试，合起来跑 330.5 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
 不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的模块上，单独量的数：
 `test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、`test_connect_api` 6.7 秒，
-其余十三个模块合起来 16 秒 ——
-日常开发跑那十三个就够（命令见 AGENTS.md，16.0 秒）。两处实测改掉的等法（2026-10-13）：
+其余十三个模块合起来 7.5 秒（323 个测试，2026-10-13 实测）——
+日常开发跑那十三个就够（命令见 AGENTS.md）。两处实测改掉的等法（2026-10-13）：
 `neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
 控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
 `poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
@@ -636,7 +690,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `POST` 按 `app.js` 发的那份表单写覆盖配置（`--max-context` 与 `--vision` 成、`--kv-resident` 不成对时
   被删）、越界回 `ok:false` 加说明且**配置字节未动**、`action:"reset"` 删掉覆盖配置且上游那份未动、
   改了要重启的东西回 `restart_required` 并带 pid。
-- `test_ui`（52 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+- `test_ui`（63 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
@@ -647,12 +701,19 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
   **打包环境缺 pywebview 时
   `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`；
-  **语言与主题那一组**（`TestLanguageAndTheme`，8 个）：`i18n.js` 语法配平、`BLOCKS`/`PHRASES`/`ATTRS`
+  **语言与主题那一组**（`TestLanguageAndTheme`，9 个）：`i18n.js` 语法配平、`BLOCKS`/`PHRASES`/`ATTRS`
   齐且 `applyLang`/`applyTheme`/`init` 在顶层、`index.html` 里每一个 `data-i18n` 键在 `BLOCKS` 里
   （漏一个键那块文字就永远不换）、`data-i18n` 不包着控件（包着就把下拉框与按钮抹了）、
   `app.js` 里每个 `t("中文")` 字面量在 `PHRASES` 里、HTML 里的中文 `placeholder`/`title` 在 `ATTRS` 里、
   顶栏两个按钮与 `.nav-prefs` 在 HTML 与 CSS 里、**`:root` 与 `html[data-theme="light"]` 之外的规则里
-  不许出现硬编码颜色**（有一条组件规则写死了 `#fff`，浅色主题下它就是一块白斑）。
+  不许出现硬编码颜色**（有一条组件规则写死了 `#fff`，浅色主题下它就是一块白斑）；**两个
+  `<script>` 不许在顶层声明同一个名字**（按 `index.html` 的加载顺序把顶层名字串起来查，
+  状态永远「未启动」、任何点击都没反应的那次事故就是 `t` 与 `applyLang` 撞名）。
+- `test_ui` 里的 `TestWebCheck`（8 个）：`neo/webcheck.py` 的体检与打包闸门 —— 真树体检干净时
+  `build_exe.web_gate()` 放行；拆掉 `i18n.js` 的 IIFE 后闸门拒绝出包，并点名撞的是哪两个文件的
+  哪两行；机器上有 node 时拼接后的整段交给 V8 解析、报的是浏览器那句原话（`already been declared`），
+  没 node 时不许假装跑过这一关；花括号漏一个要报、顶层的 `poll();` 与 `setInterval(poll` 都没了要报、
+  `<script>` 指的文件不在要报；顶层名字要抓到 40 个以上（不然这条检查等于没跑）。
 - `test_logging`（25 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
   输出有界、说明折叠与丢弃了多少、正常输出不被改；**一次 print 的 40 行整块不被裁**（CLI 的 JSON

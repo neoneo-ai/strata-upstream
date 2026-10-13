@@ -35,6 +35,26 @@ def pywebview_available() -> bool:
     return importlib.util.find_spec("webview") is not None
 
 
+def web_gate(root: Path) -> None:
+    """页面脚本体检：不干净就拒绝打包。
+
+    页面是 exe 的全部界面。实测 2026-10-13 部署的 NeoStrata.exe（13,981,433 字节）：
+    i18n.js 顶层的 function t / function applyLang 与 app.js 顶层的 const t /
+    const applyLang 撞名，浏览器解析 app.js 时抛 "Identifier 't' has already been
+    declared"，app.js 整段不跑 —— exe 打成功、进程在跑、端口在应答，窗口上任何点击
+    都没反应、状态永远"未启动"。这种损坏逐文件的语法检查看不见（每个文件自己合法），
+    所以体检按 index.html 的加载顺序把页面当一个程序查（neo/webcheck.py）。
+    """
+    from . import webcheck
+
+    bad = webcheck.problems(root)
+    if bad:
+        raise SystemExit("页面脚本体检没过，拒绝打包（打出来的 exe 界面是死的）：\n"
+                         + "\n".join(f"  - {item}" for item in bad)
+                         + "\n改完再跑一次：python -m neo.webcheck")
+
+
+
 def build(dest: str | Path = "", quiet: bool = False, allow_no_webview: bool = False) -> Path:
     """跑 PyInstaller，把 NeoStrata.exe 放到 dest（默认仓库根）。回 exe 的路径。
 
@@ -51,6 +71,7 @@ def build(dest: str | Path = "", quiet: bool = False, allow_no_webview: bool = F
         raise SystemExit("打包要 pywebview：缺了它打出来的 exe 没有窗口，双击只会开一个浏览器页。\n"
                          "先装上：python -m pip install -r neo/requirements-neo.txt\n"
                          "确实只要浏览器界面（不要原生窗口）就加 --no-webview 再来一次。")
+    web_gate(root)
 
     dist = neo_dir / "dist"
     work = neo_dir / "build"

@@ -13,6 +13,20 @@
 // 组件一律用 var(--…)。硬编码的深色（日志框、命令框）跟着换成 var(--code-bg)。
 "use strict";
 
+// 整个文件包在一个 IIFE 里，只往外递一个 window.NEO_I18N。
+//
+// 为什么必须包：index.html 里 <script src="/i18n.js"> 与 <script src="/app.js"> 是
+// 同一个全局作用域的两段经典脚本。i18n.js 顶层的 function t / function applyLang 与
+// app.js 顶层的 const t / const applyLang 撞名，浏览器在**解析** app.js 时就抛
+// "Identifier 't' has already been declared" —— app.js 一行都不执行：poll() 没跑起来
+// （状态胶囊永远停在"未启动"、卡片全是"—"），document.querySelectorAll(".tab") 那一批
+// onclick 一个都没挂上（任何点击都没反应）。node --check 逐文件查，看不见跨文件重名，
+// 所以 385 条测试全绿、窗口却是死的。实测 2026-10-13 的 NeoStrata.exe（13,981,433 字节）。
+// 防回归：neo/tests/test_ui.py 的
+// TestLanguageAndTheme.test_the_two_scripts_do_not_share_top_level_names。
+(() => {
+"use strict";
+
 const LANG_KEY = "neo.lang";
 const THEME_KEY = "neo.theme";
 const PHRASES = {};          // 动态文案：中文原文 -> 英文
@@ -484,6 +498,7 @@ if (typeof document !== "undefined") {
 
 // 给 app.js 用：window.NEO_I18N = { t, applyLang, setLang, setTheme, neoLang, neoTheme }
 window.NEO_I18N = { t, attrText, applyLang, setLang, setTheme, neoLang, neoTheme, PHRASES, BLOCKS, ATTRS };
+})();
 
 
 

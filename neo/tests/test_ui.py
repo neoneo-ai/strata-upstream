@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -25,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from neo import console_io, state, ui_watchdog                     # noqa: E402
+from neo.webcheck import js_depth_lines, js_top_level_names        # noqa: E402
 
 
 class StateDirBase(unittest.TestCase):
@@ -249,86 +251,6 @@ class TestClickPathIsHttpOnly(unittest.TestCase):
         self.assertNotIn("js_api", code)
         for route in ("/neo/open", "/neo/open-log"):
             self.assertIn(route, js, f"页面点开的动作要有服务接口：{route}")
-
-
-def js_depth_lines(text: str) -> list[int]:
-    """app.js 每一行开头的花括号深度。跳过注释、字符串、模板串与正则字面量。
-
-    返回的第 k 项就是第 k 行（从 0 数）行首的深度。测试用它盯"顶层"这件事：
-    一个函数体的花括号漏了，后面整段顶层代码就落进它的身体里，行首缩进看不出来，
-    深度能看出来。
-    """
-    depths = [0]
-    depth = 0
-    i, n = 0, len(text)
-    prev = ""                                   # 上一个代码字符（判断这里是正则还是除法）
-    REGEX_AFTER = "=(,:[!&|?{};+-*%~^<>"
-
-    def nl(from_i: int, to_i: int) -> None:     # 跳过多行字面量时保持行号对齐
-        for k in range(from_i, to_i):
-            if text[k] == "\n":
-                depths.append(depth)
-
-    while i < n:
-        ch = text[i]
-        if ch == "\n":
-            depths.append(depth)
-            i += 1
-        elif ch == "/" and text[i + 1:i + 2] == "/":
-            j = text.find("\n", i)
-            i = n if j < 0 else j
-        elif ch == "/" and text[i + 1:i + 2] == "*":
-            j = text.find("*/", i + 2)
-            end = n if j < 0 else j + 2
-            nl(i, end)
-            i = end
-        elif ch in "'\"":
-            j = i + 1
-            while j < n and text[j] != ch:
-                j += 2 if text[j] == "\\" else 1
-            nl(i, min(j + 1, n))
-            prev = ch
-            i = min(j + 1, n)
-        elif ch == "`":
-            j = i + 1
-            while j < n and text[j] != "`":
-                if text[j] == "\\":
-                    j += 2
-                elif text[j] == "$" and text[j + 1:j + 2] == "{":
-                    inner, k = 1, j + 2
-                    while k < n and inner:
-                        if text[k] == "{":
-                            inner += 1
-                        elif text[k] == "}":
-                            inner -= 1
-                        k += 1
-                    nl(j, k)
-                    j = k
-                else:
-                    j += 1
-            nl(i, min(j + 1, n))
-            prev = "`"
-            i = min(j + 1, n)
-        elif ch == "/" and (not prev or prev in REGEX_AFTER):
-            j = i + 1
-            while j < n and text[j] != "/":
-                j += 2 if text[j] == "\\" else 1
-            j += 1
-            while j < n and text[j].isalpha():
-                j += 1                            # 正则的 flags：/x/gi
-            nl(i, min(j, n))
-            prev = "/"
-            i = min(j, n)
-        elif ch in "{}":
-            depth += 1 if ch == "{" else -1
-            prev = ch
-            i += 1
-        else:
-            if not ch.isspace():
-                prev = ch
-            i += 1
-    depths.append(depth)
-    return depths
 
 
 class TestAppJsTopLevelWiring(unittest.TestCase):
@@ -687,6 +609,30 @@ class TestLanguageAndTheme(unittest.TestCase):
         self.assertIn('<script src="/i18n.js"></script>\n<script src="/app.js"></script>', self.html)
         self.assertIn('"/i18n.js"', self.server.replace("'", '"'), "服务不发 /i18n.js")
 
+    def test_the_two_scripts_do_not_share_top_level_names(self):
+        """两个 <script> 共用一个全局作用域：顶层重名 = 后一个文件整段不跑。
+
+        实测 2026-10-13 新打的 NeoStrata.exe（13,981,433 字节）：i18n.js 顶层有
+        function t 与 function applyLang，app.js 顶层有 const t 与 const applyLang。
+        浏览器在解析 app.js 时抛 "Identifier 't' has already been declared"，app.js
+        一行都不执行 —— poll() 没跑起来（状态胶囊停在"未启动"、卡片全是"—"、
+        "发生了什么"是空的），document.querySelectorAll(".tab") 那一批 onclick 一个都没挂
+        （用户看到的就是"任何点击都没反应"）。逐文件的 node --check 看不见跨文件重名，
+        所以 385 条测试全绿、窗口是死的。这条按 index.html 的加载顺序把顶层名字串起来查。
+        """
+        order = re.findall(r'<script src="/([^"]+)"\s*>\s*</script>', self.html)
+        self.assertEqual(order, ["i18n.js", "app.js"], f"页面的 <script> 顺序变了：{order}")
+        seen = {}
+        for name in order:
+            src = (ROOT / "neo" / "web" / name).read_text(encoding="utf-8")
+            for ident, line in js_top_level_names(src).items():
+                if ident in seen:
+                    where, at = seen[ident]
+                    self.fail(f"{ident} 在 {where}:{at} 与 {name}:{line} 的顶层都声明了："
+                              f"同一全局作用域里这是解析期 SyntaxError，{name} 整段不跑")
+                seen[ident] = (name, line)
+        self.assertGreater(len(seen), 40, "顶层名字没抓到几个，这条检查等于没跑")
+
     def test_defaults_are_chinese_and_dark(self):
         self.assertIn('let got = "zh"', self.i18n)
         self.assertIn('let got = "dark"', self.i18n)
@@ -756,6 +702,90 @@ class TestLanguageAndTheme(unittest.TestCase):
     def test_the_new_blocks_have_styles(self):
         for needle in (".nav-prefs", "#btn-lang", ".up-row", ".ms-grid", "#ms-model"):
             self.assertIn(needle, self.css, f"style.css 里没有 {needle}")
+
+
+class TestWebCheck(unittest.TestCase):
+    """neo/webcheck.py - 页面脚本当一个程序查；打包前的闸门就是它（build_exe.web_gate）。
+
+    起因是实测 2026-10-13 部署的 NeoStrata.exe（13,981,433 字节）：i18n.js 顶层的
+    function t / function applyLang 与 app.js 顶层的 const t / const applyLang 撞名，
+    浏览器解析 app.js 时抛 "Identifier 't' has already been declared"，app.js 整段不跑
+    —— exe 打成功、进程在跑、8080 与 8083 都在应答，窗口上任何点击都没反应、状态永远
+    "未启动"。逐文件的语法检查看不见跨文件重名，所以这里按 index.html 的加载顺序查。
+    """
+
+    def setUp(self):
+        from neo import build_exe, webcheck
+        self.build_exe, self.webcheck = build_exe, webcheck
+        self.tmp = Path(tempfile.mkdtemp())
+        self.web = self.tmp / "neo" / "web"
+        self.web.mkdir(parents=True)
+        src = ROOT / "neo" / "web"
+        for name in ("index.html", "style.css"):
+            shutil.copy(src / name, self.web / name)
+        self.i18n = (src / "i18n.js").read_text(encoding="utf-8")
+        self.app = (src / "app.js").read_text(encoding="utf-8")
+
+    def root(self, i18n: str | None = None, app: str | None = None) -> Path:
+        (self.web / "i18n.js").write_text(self.i18n if i18n is None else i18n, encoding="utf-8")
+        (self.web / "app.js").write_text(self.app if app is None else app, encoding="utf-8")
+        return self.tmp
+
+    @staticmethod
+    def unwrap_i18n(src: str) -> str:
+        """去掉包着 i18n.js 的那个 IIFE，还原成出事故时的形状。"""
+        at, end = src.index("(() => {"), src.rindex("})();")
+        return src[:at] + src[at + 8:end] + src[end + 6:]
+
+    def test_the_shipped_page_is_clean(self):
+        self.assertEqual(self.webcheck.problems(ROOT), [], "页面脚本体检不干净")
+
+    def test_the_gate_passes_on_the_real_tree(self):
+        self.build_exe.web_gate(ROOT)          # 不抛 = 放行
+
+    def test_the_gate_refuses_a_dead_page(self):
+        """i18n.js 的 IIFE 被拆掉时，打包当场拒绝，并且说清是哪两个名字撞的。"""
+        with self.assertRaises(SystemExit) as got:
+            self.build_exe.web_gate(self.root(i18n=self.unwrap_i18n(self.i18n)))
+        note = str(got.exception)
+        self.assertIn("拒绝打包", note)
+        self.assertIn("t 在 i18n.js", note)
+        self.assertIn("applyLang 在 i18n.js", note)
+
+    def test_v8_agrees_with_the_cross_file_check(self):
+        """有 node 时，拼接后的整段交给 V8 解析，报的是浏览器那句原话。"""
+        probs = self.webcheck.problems(self.root(i18n=self.unwrap_i18n(self.i18n)))
+        text = "\n".join(probs)
+        if shutil.which("node"):
+            self.assertIn("V8 解析不过", text)
+            self.assertIn("already been declared", text)
+        else:
+            self.assertNotIn("V8", text, "没有 node 时不许假装跑过这一关")
+
+    def test_an_unbalanced_brace_is_reported(self):
+        """花括号漏一个（内嵌框停在 about:blank 的那次事故）要报出来。"""
+        probs = self.webcheck.problems(self.root(app=self.app + "\n{\n"))
+        self.assertTrue(any("花括号不配平" in p for p in probs), probs)
+
+    def test_a_page_that_never_polls_is_reported(self):
+        """顶层的 poll(); 与 setInterval(poll 都没了 = 状态永远停在初始值。"""
+        stripped = re.sub(r"poll\(\);|setInterval\(poll, 2000\);", "", self.app)
+        probs = self.webcheck.problems(self.root(app=stripped))
+        self.assertTrue(any("不轮询" in p for p in probs), probs)
+
+    def test_a_missing_script_file_is_reported(self):
+        """页面写着 <script src="/i18n.js"> 而文件不在：整页脚本少一截，要报。"""
+        self.root()
+        (self.web / "i18n.js").unlink()
+        probs = self.webcheck.problems(self.tmp)
+        self.assertTrue(any("不在" in p for p in probs), probs)
+
+    def test_the_check_is_not_vacuous(self):
+        """顶层名字要抓到几十个，否则这条检查等于没跑。"""
+        names = self.webcheck.js_top_level_names(self.app)
+        self.assertGreater(len(names), 40, f"只抓到 {len(names)} 个顶层名字")
+        self.assertEqual(self.webcheck.js_top_level_names(self.i18n), {},
+                         "i18n.js 顶层不该留任何名字（整文件包在 IIFE 里）")
 
 
 if __name__ == "__main__":

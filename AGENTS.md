@@ -29,22 +29,26 @@ pages). It talks to Strata only through existing CLI flags, env vars and HTTP en
 under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules, the single-instance rules and
 its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one windowed `NeoStrata.exe` with
 `python -m neo.build_exe` (spec `neo/NeoStrata.spec`), with pywebview installed in the build env - the build refuses
-without it, because the exe would silently lose its window and open only a browser page; the exe is meant to sit in a
+without it, because the exe would silently lose its window and open only a browser page, and it refuses when
+`neo/webcheck.py` reports a page script that would not run in the browser (two `<script>` tags share one global
+scope, so a top-level name declared in both files means the later file never executes - the window opens and every
+click is dead); the exe is meant to sit in a
 Strata root directory and uses that directory as its root. Its tests need no GPU, no network and never touch a real
 user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
 neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings`
-(385 tests, 289.3 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
+(394 tests, 330.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
 329-test run). The modules that start real processes are the whole cost - measured on their own: `test_supervisor`
 56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
-the other thirteen together are 16 s. For a quick pass while developing, run those thirteen and leave the three out:
+the other thirteen together are 7.5 s. For a quick pass while developing, run those thirteen and leave the three out:
 `python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
-neo.tests.test_logging neo.tests.test_model_settings` (16.0 s). Neo's own
-packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
+neo.tests.test_logging neo.tests.test_model_settings` (7.5 s, 323 tests). `python -m neo.webcheck` checks the page
+scripts (the two `<script>` files as one program) in about a second, and `build_exe` runs it before packaging.
+Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source,

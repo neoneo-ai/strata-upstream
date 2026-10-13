@@ -48,14 +48,19 @@ itself - venv, dependencies, engine binaries and models all go through upstream 
 Deploying into a Strata checkout goes through `python -m neo.deploy --to <tree>` (dry-run by default; gates:
 engine HEAD equals the pin with tracked files clean - Neo's own files there are untracked by design, so the
 dirty check passes `--untracked-files=no`; only Neo's listed paths are written; a running `NeoStrata.exe`
-blocks the write), then `webcheck` and the quick suite run in the target tree. Its tests need no GPU, no network and never touch a real
+blocks the write), then `webcheck` and the quick suite run in the target tree. `--apply` also appends Neo's four
+paths (`/neo/`, `/NEO-START.bat`, `/NeoStrata.exe`, `/strata/`) to the target's `.git/info/exclude` - append-only,
+never to the tracked upstream `.gitignore`, dry-run only reports - so `git status` there shows only upstream
+files. `neo/deploy.py` and `neo/engine_setup.py` widen stdout to UTF-8 (`wide_stdout()`) before printing: git
+output decoded as UTF-8 carries `U+FFFD`, which a cp936 console cannot encode (the `--ensure` CLI crashed on it
+before 2026-10-13). Its tests need no GPU, no network and never touch a real
 user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
 neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings
 neo.tests.test_paths neo.tests.test_engine_setup neo.tests.test_deploy`
-(484 tests, 1054.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; the same 19 modules
+(492 tests, 1067.1 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; the same 19 modules
 were 406 tests / 342.5 s before the split, and 243.4 s on the earlier 329-test run). The modules that start real
 processes are the whole cost - measured on their own: `test_supervisor`
 56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
@@ -67,7 +72,7 @@ sixteen modules that start no processes and leave the three out:
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
 neo.tests.test_logging neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup
-neo.tests.test_deploy` (28.4 s, 400 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
+neo.tests.test_deploy` (24.7 s, 408 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
 thirteen-module run). `test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one
 commit per case), which is why the full 19-module run is 17.6 minutes while those two alone measure 8.4 s and
 5.0 s - run the quick pass while developing, the full pass before a deploy. `python -m neo.webcheck` checks the page

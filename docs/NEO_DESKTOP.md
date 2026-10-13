@@ -84,7 +84,7 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 484 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty，`test_deploy.py` 守换版闸门 |
+| `neo/tests/` | 492 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty，`test_deploy.py` 守换版闸门 |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -344,7 +344,8 @@ SHA-256 `9e37f07e87473210ac98ee6041e6651c02e1c473bf75eae65191840fa2b80768`，这
 
 **目录叫 `strata/`，不叫 `engine/`。** 上游 `setup.py` 的 `engine_dir()` 里 `engine/` 是
 **引擎二进制**的目录（根 `.gitignore` 里 `/engine/` 就是它），源码树不能占这个名字。
-`strata/` 在根 `.gitignore` 里：它是 clone 出来的，不进 Neo 的仓库。
+`strata/` 在根 `.gitignore` 里：它是 clone 出来的，不进 Neo 的仓库。部署树里这一行不在
+`.gitignore`（那是上游的跟踪文件），在 `.git/info/exclude`，由 `neo/deploy.py` 补上。
 
 `plan()` 是纯函数（不联网、不写文件），状态七个：`ready`（HEAD == pin 且 git 干净）、
 `clone`、`zip_copy`、`need_zip`、`checkout_pin`（HEAD 不是 pin）、
@@ -760,6 +761,9 @@ python -m neo.build_exe --dest D:\Work\Strata
 
 - **不在部署树里提交任何东西**，也不给它的 `origin` 加第二个远端 —— 上游更新要能直接 `git pull`。
 - **Neo 不改上游文件**。Neo 带去的东西全是未跟踪的：`NeoStrata.exe`、`neo/`、`NEO-START.bat`。
+  部署时 `neo/deploy.py` 把这三条加上 `strata/`（引擎源码树）写进部署树的
+  `.git/info/exclude` —— 那是 git 的本地忽略文件，不在任何提交里，所以 `git status` 只看得到上游的
+  东西，而 Neo 一个跟踪文件都没动（上游的 `.gitignore` 是跟踪文件，不碰）。
   2026-10-13 撤掉了先前打在 `serve/server.py` 上的本机豁免补丁（旧文件备份在
   `neo/state/backups/server.py.v0.1.43.neo-patched.bak`，393,602 字节），上游文件恢复原样
   （391,688 字节）。撤补丁留下的缺口由 Neo 自己补：监控页改走 `/strata/` 只读通道（见"token 管到哪"）。
@@ -776,6 +780,11 @@ python -m neo.build_exe --dest D:\Work\Strata
   引擎闸门 OK（HEAD `a0116b2782a5` == pin），进程闸门被 `instance.json` 记的 pid 7276 挡住，
   清单是 new 7、same 26、update 30，并当场报出部署树里多出来的一个 `neo/test_ui.py`
   （旧同步留下的，`--prune` 会删）—— 只同步 `.py` 漏掉 `neo/web/` 那一类坑就是这么露出来的。
+- **控制台打印**：`neo/deploy.py` 与 `neo/engine_setup.py` 的 `main()` 先调 `wide_stdout()`，
+  把 stdout 改成 UTF-8（`errors="replace"`）。2026-10-13 实测：`python -m neo.engine_setup --ensure`
+  在 cp936 控制台上崩在打印那一步（`UnicodeEncodeError: 'gbk' codec can't encode character '\ufffd'`）——
+  git 的输出按 UTF-8 解，解出来的替换字符 `U+FFFD` 是 GBK 编码不了的。现在这两条 CLI 在 cp936 控制台上
+  把那一行打成 `git : fatal: ...`，退出码 1，不再崩。
 - **部署 = 换 `NeoStrata.exe` + 同步 `neo/` 的源码与页面**。exe 里打的是开发树的 `neo/`；
   在部署树里跑源码（`python -m neo.manager`、`python -m neo.models`、跑测试）用的是部署树的 `neo/`，
   两边都要跟上。2026-10-13 实测踩过这个坑：只同步 `.py`、没同步 `neo/web/`，部署树的源码版页面
@@ -797,11 +806,13 @@ python -m neo.deploy --to D:\Work\Strata --apply --prune      # 真写，并删�
 顺序是固定的四步，每一步都要看清输出再走下一步：
 
 1. **dry-run**：`--to <部署树>`。看三道闸门过没过、清单里 new / update / same 各多少、
-   目标里多出来的文件是哪些。这一步不写任何东西，退出码非 0 就是闸门没过。
+   目标里多出来的文件是哪些、`.git/info/exclude` 里还缺哪几行。这一步不写任何东西，
+   退出码非 0 就是闸门没过。
 2. **停掉在跑的 exe**：进程闸门认两样 —— `neo/state/instance.json` 里记的 pid，和 Windows
    进程表里镜像路径落在这棵部署树里的 `NeoStrata.exe`。文件被进程锁着的时候写进去就是半个 exe，
-   所以这一条不能绕。关掉窗口（或 `taskkill /PID <pid>`）再走下一步。
+   所以这一条不能绕。关掉窗口（或 `taskkill /PID <pid> /T /F`）再走下一步。
 3. **`--apply`**：每个文件先写同目录的临时文件、核对 SHA-256、再 `os.replace` 换上去；
+   缺的忽略行追加进 `.git/info/exclude`（只追加、不重复，dry-run 只报不写）；
    写完把整份清单再核一遍摘要，并**在部署树里**跑 `python -m neo.webcheck` 与快套件
    （`--no-tests` 只跳过测试那一步，webcheck 不跳）。
 4. **事后检查**：部署树里 `python -m neo.webcheck`、快套件、`git -C <部署树> rev-parse HEAD`
@@ -822,11 +833,11 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_deploy
 ```
 
-484 个测试，合起来跑 1054.5 秒 = 17.6 分钟（Windows 11，Python 3.13.15，`serve/server.py --engine mock`
+492 个测试，合起来跑 1067.1 秒 = 17.8 分钟（Windows 11，Python 3.13.15，`serve/server.py --engine mock`
 起真实进程，不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程与建真 git 树的
 模块上，单独量的数：`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、
 `test_connect_api` 6.7 秒，
-其余十六个模块合起来 28.4 秒（400 个测试，2026-10-13 实测）——
+其余十六个模块合起来 24.7 秒（408 个测试，2026-10-13 实测）——
 日常开发跑那十六个就够（命令见 AGENTS.md）。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
 `test_engine_setup` 与 `test_deploy` 各自单跑是 8.4 与 5.0 秒，在全量套件里是十几分钟 —— 它们每个用例在
 临时目录里 `git init` + 一次提交造真树，Windows Defender 扫临时目录时一次 `git init` 要几十秒。
@@ -953,7 +964,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   照样能用、`NEO_STRATA_ROOT` 原样照用、相对路径按应用目录解析；`test_real_tree_today` 与
   `test_manager_default_root_matches` / `test_state_root_matches` 钉住今天这台机器：新规则算出的根
   与 `manager` / `state` 原来各自算的**逐字节相同**（exe 放进 Strata 根目录时第 3 条先命中）。
-- `test_engine_setup`（35 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
+- `test_engine_setup`（36 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
   archive 地址就是那个 tag 的 zip）；`clone_argv` 是 `--depth 1 --single-branch --branch <tag>`
   且落到 `strata/`、`checkout` 是 detach 到钉住的 SHA；`plan()` 七个状态各钉一条
   （`clone` / `zip_copy` / `need_zip` / `not_a_git_tree` / `checkout_pin` / `dirty` / `ready`），
@@ -961,14 +972,20 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   摘要是唯一的进门路（pin 里没有摘要时任何 zip 都不解）、解压只搬那个顶层目录并记下来历、
   两个顶层目录的 zip 不解、目标已存在不解；`run_engine` 在脏树 / 普通目录前拒绝且**一个文件都不动**，
   `--zip` 那条路装完并记下来历；`status()` 的形状就是页面读的；命令行 `--dry-run` 只打印命令不写文件、
-  `--json` 是 JSON、pin 读不出来说人话。要 git 的用例在没 git 的机器上带理由跳过。
-- `test_deploy`（19 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
+  `--json` 是 JSON、pin 读不出来说人话；`--ensure` 在 cp936 控制台上打印带 `U+FFFD` 的 git 输出不崩
+  （`wide_stdout()`）。要 git 的用例在没 git 的机器上带理由跳过。
+- `test_deploy`（26 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
   跟踪文件脏挡；**没有 git 不算干净**；**部署树里 Neo 自己的 untracked 文件不算脏**）、
   路径（`neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；exe 不在源码清单里；
   每个文件分 new / update / same；目标里多出来的文件要报出来）、进程（缺 exe 挡、在跑的实例挡）；
   dry-run 一个文件都不写；`--apply` 写完逐文件核对 SHA-256、闸门不过的树拒绝写、
   `--prune` 只删"源里没有的 Neo 文件"；`--json` 是 JSON 且说得出闸门过没过；报告里点名闸门与计数；
-  `--to` 不给就报错；pin 与目标树对不上时挡住报告。
+  `--to` 不给就报错；pin 与目标树对不上时挡住报告。本地忽略那一笔（`.git/info/exclude`）钉五条：
+  缺的行一次补齐、第二次一个字节都不动（不重复）、dry-run 只报不写、目标不是 git 检出就说"没有可写的地方"、
+  补完的行让 `git check-ignore` 真把 `strata/` 认成忽略；`--apply` 那一条还核对了上游的 `.gitignore`
+  逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
+  和真控制台一样能 `reconfigure`），打印带 `U+FFFD` 的行 —— 不宽化就抛 `UnicodeEncodeError`，
+  宽化后按 UTF-8 读回来是 `git : fatal: ...`。
 - `test_console` 里的 `TestEngineEndpoint`（4 个）：`GET /neo/engine` 回页面要读的 13 个键、
   三步的名字、两条路由接在 `console_server.py` 里、认不得的 action 挡回来、
   `install` 走后台线程（`wait=False`，点一下不能把请求线程堵几十分钟）且 `setup=True`

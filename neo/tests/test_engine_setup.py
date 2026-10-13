@@ -73,6 +73,23 @@ def make_git_tree(base: Path) -> str:
     return engine_setup.git_head(base)
 
 
+def wide_console():
+    """cp936 的字节控制台当 stdout（与 `test_deploy.py` 里那条一样）：中文装得下，U+FFFD 装不下。"""
+    import sys
+
+    buffer = io.BytesIO()
+    wrapper = io.TextIOWrapper(buffer, encoding="cp936", errors="strict")
+    was = sys.stdout
+    sys.stdout = wrapper
+
+    def restore():
+        if sys.stdout is wrapper:
+            sys.stdout.close()
+        sys.stdout = was
+
+    return buffer, restore
+
+
 def quiet(argv):
     """跑 CLI，把 stdout 收进字符串（页面与终端都读这一份输出）。"""
     buffer = io.StringIO()
@@ -371,6 +388,37 @@ class TestRunAndPage(StateDirBase):
         data = json.loads(out)
         self.assertEqual(data["dest"], str(self.tmp / "strata"))
         self.assertIn(data["state"], engine_setup.STATE_ACTION)
+
+    @NEEDS_GIT
+    def test_cli_prints_a_log_tail_the_console_codepage_cannot_hold(self):
+        """`engine.log` 里有 cp936 装不下的字节时，`--ensure` 末尾那段要打印出来。
+
+        2026-10-13 实测：`neo/deploy.py` 打印子进程输出尾部时抛
+        UnicodeEncodeError（子进程的输出按 utf-8 读，坏字节变成 U+FFFD，
+        Windows 中文控制台默认 cp936 装不下它）。这一条把 stdout 换成只认 cp936 的流
+        模拟那种控制台：源码树已就位（HEAD 就是 pin），`--ensure` 不联网、不跑 setup.py，
+        只看它是把话说完，还是崩在打印上。
+        """
+        import sys
+
+        head = make_git_tree(self.tmp / "strata")
+        self.assertTrue(head, "这一条要 git")
+        ref = make_ref(sha=head)
+        ref_path = self.tmp / "ref.json"
+        ref_path.write_text(json.dumps(ref), encoding="utf-8")
+        engine_setup.engine_log_path().parent.mkdir(parents=True, exist_ok=True)
+        engine_setup.engine_log_path().write_bytes(
+            b"clone \xb2\xb0\xd3\xa3 \xd6\xd0\xce\xc4\n")      # cp936 的字节，utf-8 读不通
+        buffer, restore = wide_console()
+        self.addCleanup(restore)
+        code = engine_setup.main(["--dest", str(self.tmp / "strata"),
+                                  "--ref", str(ref_path), "--ensure", "--no-setup"])
+        sys.stdout.flush()
+        out = buffer.getvalue().decode("utf-8", "replace")
+        self.assertEqual(code, 0, out)
+        self.assertIn("clone", out)
+        self.assertIn("\ufffd", out, "坏字节要变成 U+FFFD 打出来，不能崩")
+
 
     def test_cli_reports_a_pin_it_cannot_read(self):
         bad = self.tmp / "ref.json"

@@ -49,6 +49,20 @@ ZIP_SHA_HEX_LEN = 64
 REQUIRED_KEYS = ("url", "tag", "sha")
 
 
+def wide_stdout() -> None:
+    """把 stdout 换成装得下中文与替换符的编码（与 `neo/deploy.py` 里那条一样）。
+
+    `--ensure` 末尾打印 `engine.log` 的尾部：那份输出按 utf-8 读，读不到的字节变成
+    U+FFFD，而 Windows 控制台默认 cp936 装不下它 —— 2026-10-13 在 `neo/deploy.py` 上
+    实测崩过一次（`UnicodeEncodeError: 'gbk' codec can't encode character '\\ufffd'`），
+    这一条是同一处坑。测试里 stdout 常被换成 `StringIO`（没有 reconfigure），那条路原样不动。
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 class EngineRefError(RuntimeError):
     """pin 读不出来或形状不对：宁可不装，也不装一个来路不明的引擎。"""
 
@@ -448,6 +462,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    wide_stdout()
     args = parse_args(argv)
     try:
         ref = load_ref(args.ref or None)

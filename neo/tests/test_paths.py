@@ -24,7 +24,24 @@ import tempfile                                      # noqa: E402
 from pathlib import Path                             # noqa: E402
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
-from neo import manager, paths, state               # noqa: E402
+from neo import engine_setup, manager, paths, state   # noqa: E402
+
+
+def engine_dir_ignored(root):
+    """这棵树里，引擎源码树目录（`strata/`）被 git 忽略了吗。问不到回 None。
+
+    问的是 git 自己（`git check-ignore`），不是读 `.gitignore` 的文本：
+    开发树里那一行在 `.gitignore`（Neo 仓库自己的文件），
+    部署树里那一行在 `.git/info/exclude`（上游的 `.gitignore` 是跟踪文件，Neo 不动它）。
+    `--no-index` + 目录里一个不存在的路径：不用真 clone 一份才问得出。
+    """
+    if not engine_setup.git_available():
+        return None
+    rc, _ = engine_setup.git_run(["git", "check-ignore", "-q", "--no-index",
+                                  f"{paths.ENGINE_DIR_NAME}/setup.py"], cwd=root)
+    if rc not in (0, 1):
+        return None
+    return rc == 0
 
 
 def make_engine_root(base: Path) -> Path:
@@ -52,9 +69,12 @@ class TestMarkers(unittest.TestCase):
         """向导的源码树叫 strata/，不叫 engine/：上游 setup.py 的 engine/ 是引擎二进制的家。"""
         self.assertEqual(paths.ENGINE_DIR_NAME, "strata")
         self.assertNotEqual(paths.ENGINE_DIR_NAME, "engine")
-        gitignore = (REPO / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn("/strata/", gitignore, "引擎源码树要 gitignore（它是 clone 出来的）")
-        self.assertIn("/engine/", gitignore, "上游的引擎二进制目录本来就 gitignore")
+        ignored = engine_dir_ignored(REPO)
+        if ignored is None:
+            self.skipTest("这一条要 git（git check-ignore 问这棵树忽略不忽略）")
+        self.assertTrue(ignored, "引擎源码树要被 git 忽略：它是 clone 出来的。"
+                                 "开发树靠 .gitignore 的 /strata/，"
+                                 "部署树靠 .git/info/exclude（neo/deploy.py 补的）")
 
 
 class TestResolutionOrder(unittest.TestCase):

@@ -34,10 +34,35 @@ NEO_DIR_NAME = "neo"
 SKIP_DIRS = {"state", "__pycache__", "build", "dist"}
 #: 部署树里 Neo 的落点（AGENTS.md：exe + neo/ + NEO-START.bat，全 untracked）
 ALLOWED_TOP = (NEO_DIR_NAME, BAT_NAME, EXE_NAME)
+#: 部署树里要让 git 看不见的东西：Neo 自己的三样 + 向导 clone 出来的引擎源码树 strata/。
+#: 写进 .git/info/exclude（本地忽略，git 自己的机制），不改上游的 .gitignore ——
+#: 上游的 .gitignore 是跟踪文件，改它就等于改了部署树的跟踪文件，换版闸门（只看跟踪文件）
+#: 立刻永远不过，用户的 `git pull` 也会撞上它。
+EXCLUDE_LINES = (f"/{NEO_DIR_NAME}/", f"/{BAT_NAME}", f"/{EXE_NAME}",
+                 f"/{paths.ENGINE_DIR_NAME}/")
+EXCLUDE_MARK = "# Neo（neo/deploy.py 写的）：Neo 的文件与引擎源码树，本地忽略，不动上游的 .gitignore"
+#: 本地忽略文件在 git 里的固定位置（相对部署树根）
+EXCLUDE_NAME = ".git/info/exclude"
 QUICK_SUITE = ("test_start", "test_models", "test_ui", "test_tokens", "test_netprobe",
                "test_wizard", "test_connectors", "test_engines", "test_manager_cli",
                "test_upstream_api", "test_connect_cli", "test_logging",
-               "test_model_settings", "test_paths", "test_engine_setup")
+               "test_model_settings", "test_paths", "test_engine_setup", "test_deploy")
+
+
+def wide_stdout() -> None:
+    """把 stdout 换成装得下中文与替换符的编码。
+
+    实测 2026-10-13：`--apply` 跑完打印快套件的尾部时抛
+    `UnicodeEncodeError: 'gbk' codec can't encode character '\\ufffd'` —— 子进程的输出按
+    utf-8 读、读不到的字节变成 U+FFFD，而 Windows 控制台默认是 cp936，那个字符它装不下。
+    体检已经跑完了，崩在打印上：换版脚本要说清结果，不能把结果弄丢。
+    测试里 stdout 常被换成 `StringIO`（没有 reconfigure），那条路原样不动。
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 
 
 def sha256_file(path, chunk: int = 1 << 20) -> str:
@@ -158,6 +183,48 @@ def running_exe(target) -> list[str]:
     return found
 
 
+# ---------------- 本地忽略（.git/info/exclude，不动上游的 .gitignore） ----------------
+def exclude_plan(target) -> dict:
+    """部署树的 `.git/info/exclude` 里还缺哪几行（纯读，不写）。"""
+    target = Path(target)
+    path = target / ".git" / "info" / "exclude"
+    lines = []
+    if path.is_file():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = [x.strip() for x in text.splitlines()]
+    return {"root": str(target), "path": str(path), "git": (target / ".git").is_dir(),
+            "have": [x for x in EXCLUDE_LINES if x in lines],
+            "missing": [x for x in EXCLUDE_LINES if x not in lines]}
+
+
+def apply_exclude(target, dry_run: bool = False) -> str:
+    """把缺的忽略行补进 `.git/info/exclude`：只追加，已有一行不补第二遍。
+
+    为什么是 `.git/info/exclude` 而不是 `.gitignore`：上游的 `.gitignore` 是跟踪文件，
+    往里加一行就是改了部署树的跟踪文件 —— 换版闸门（只看跟踪文件）从此永远不过，
+    用户的 `git pull` 也会撞上它。`.git/info/exclude` 是 git 给"本地忽略"准备的地方，
+    它本身是 untracked 的 `.git/` 里的东西，`git status` 与 `git pull` 都不理它。
+    """
+    p = exclude_plan(target)
+    if not p["missing"]:
+        return ""
+    if not p["git"]:
+        return f"{p['root']} 不是 git 检出：忽略行没处补"
+    if dry_run:
+        return f"要补 {EXCLUDE_NAME}（{len(p['missing'])} 行：{'、'.join(p['missing'])}）"
+    path = Path(p["path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head = ""
+    if path.is_file():
+        head = path.read_text(encoding="utf-8", errors="replace")
+        if head and not head.endswith("\n"):
+            head += "\n"
+    tmp = path.with_name(path.name + ".neo-tmp")
+    tmp.write_text(head + EXCLUDE_MARK + "\n" + "\n".join(p["missing"]) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return f"补了 {EXCLUDE_NAME}（{len(p['missing'])} 行：{'、'.join(p['missing'])}）"
+
+
 # ---------------- 要写什么（纯读：算摘要、比现状，不写一个文件） ----------------
 def plan(source, target, exe_path: str = "", ref=None) -> dict:
     source, target = Path(source), Path(target)
@@ -186,15 +253,20 @@ def plan(source, target, exe_path: str = "", ref=None) -> dict:
     extra = [rel for rel in neo_source_files(target) if rel not in wanted]
     gate = engine_gate(target, ref)
     busy = running_exe(target)
+    exclude = exclude_plan(target)
     notes = list(gate["notes"])
     if not exe_src.is_file():
         notes.append(f"{exe_src} 不在：先 python -m neo.build_exe 打一个，或用 --exe 指一个")
     for line in busy:
         notes.append(line)
+    if exclude["missing"]:
+        notes.append(f"{target}/{EXCLUDE_NAME} 里还缺 {len(exclude['missing'])} 行"
+                     f"（{'、'.join(exclude['missing'])}）：补上之后部署树的 git status "
+                     "只看得到上游的东西")
     return {"ok": bool(gate["ok"]) and not busy and exe_src.is_file(),
             "source": str(source), "target": str(target), "actions": actions,
             "exe": exe_action, "extra": extra, "gate": gate, "busy": busy,
-            "notes": notes}
+            "exclude": exclude, "notes": notes}
 
 
 def _copy(src: Path, dst: Path) -> None:
@@ -215,8 +287,9 @@ def apply(source, target, exe_path: str = "", ref=None, dry_run: bool = True,
     if not p["ok"]:
         return {"ok": False, "wrote": [], "notes": p["notes"], "plan": p}
     if dry_run:
-        return {"ok": True, "wrote": [], "notes": p["notes"] + ["dry-run：一个文件都没写"],
-                "plan": p}
+        dry_note = apply_exclude(target, dry_run=True)
+        notes = p["notes"] + (["dry-run：一个文件都没写"] + ([dry_note] if dry_note else []))
+        return {"ok": True, "wrote": [], "notes": notes, "plan": p}
     source, target = Path(p["source"]), Path(p["target"])
     wrote = []
     for item in p["actions"]:
@@ -233,8 +306,13 @@ def apply(source, target, exe_path: str = "", ref=None, dry_run: bool = True,
             if victim.is_file():
                 victim.unlink()
                 wrote.append(f"删除 {rel}")
+    notes = list(p["notes"])
+    exclude_note = apply_exclude(target)
+    if exclude_note:
+        wrote.append(EXCLUDE_NAME)
+        notes.append(exclude_note)
     checks = post_checks(target) if tests else {}
-    return {"ok": True, "wrote": wrote, "notes": p["notes"], "plan": p, "checks": checks,
+    return {"ok": True, "wrote": wrote, "notes": notes, "plan": p, "checks": checks,
             "engine_head": engine_setup.git_head(target)}
 
 
@@ -275,6 +353,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    wide_stdout()
     args = parse_args(argv)
     source = safe_resolve(args.source) if args.source else paths.app_root()
     target = safe_resolve(args.to)

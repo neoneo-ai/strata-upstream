@@ -20,7 +20,7 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
     __package__ = "neo.tests"
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
-from neo import deploy, engine_setup                # noqa: E402
+from neo import deploy, engine_setup, paths         # noqa: E402
 
 NEEDS_GIT = unittest.skipUnless(engine_setup.git_available(), "这一条要 git")
 
@@ -65,6 +65,32 @@ def make_target(base: Path, commit: bool = True) -> str:
     if run("-c", "user.email=neo@test", "-c", "user.name=neo", "commit", "-q", "-m", "init")[0]:
         return ""
     return engine_setup.git_head(base)
+
+
+def wide_console():
+    """把 sys.stdout 换成 cp936 的字节控制台，模拟 Windows 中文控制台。
+
+    2026-10-13 实测：`neo/deploy.py` 打印子进程输出尾部时抛
+    `UnicodeEncodeError: 'gbk' codec can't encode character '\\ufffd'` —— 子进程的输出按
+    utf-8 读、坏字节变成 U+FFFD，而 cp936 装不下它（中文本身装得下）。
+    这一条造的就是那种控制台：`TextIOWrapper` 压在 `BytesIO` 上（真 stdout 就是这么个形状，
+    所以 `wide_stdout()` 的 reconfigure 能成），写进 cp936 装不下的字符就抛。
+    返回那个字节 buffer，调用方 `flush()` 之后按 utf-8 读回来（`errors="replace"`），
+    跟控制台显示的样子一致。
+    """
+    import sys
+
+    buffer = io.BytesIO()
+    wrapper = io.TextIOWrapper(buffer, encoding="cp936", errors="strict")
+    was = sys.stdout
+    sys.stdout = wrapper
+
+    def restore():
+        if sys.stdout is wrapper:
+            sys.stdout.close()
+        sys.stdout = was
+
+    return buffer, restore
 
 
 def quiet(argv):
@@ -190,6 +216,57 @@ class TestPlan(unittest.TestCase):
         self.assertFalse(p["ok"])
         self.assertTrue(p["busy"])
 
+    @NEEDS_GIT
+    def test_the_plan_names_the_local_ignore_lines_still_missing(self):
+        """部署树（上游检出）的 .git/info/exclude 里没有 Neo 那几行：清单要说出来。"""
+        p = self.plan()
+        self.assertEqual(sorted(p["exclude"]["missing"]), sorted(deploy.EXCLUDE_LINES))
+        self.assertIn(deploy.EXCLUDE_NAME, " ".join(p["notes"]))
+
+    def test_the_local_ignore_lines_cover_the_engine_source_tree(self):
+        """strata/ 必须在里面：它是 clone 出来的，git 不该在部署树里看见它。"""
+        self.assertIn(f"/{paths.ENGINE_DIR_NAME}/", deploy.EXCLUDE_LINES)
+
+
+class TestLocalIgnore(unittest.TestCase):
+    """.git/info/exclude 那一笔：只追加、不重复、不碰上游的 .gitignore。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.dst = self.tmp / "dst"
+        self.head = make_target(self.dst)
+
+    @NEEDS_GIT
+    def test_apply_appends_the_lines_once_and_the_second_apply_adds_nothing(self):
+        path = self.dst / ".git" / "info" / "exclude"
+        note = deploy.apply_exclude(self.dst)
+        self.assertIn("补了", note)
+        text = path.read_text(encoding="utf-8")
+        for line in deploy.EXCLUDE_LINES:
+            self.assertEqual(text.splitlines().count(line), 1, f"{line} 只能有一行")
+        self.assertEqual(deploy.apply_exclude(self.dst), "", "第二次什么都不用补")
+        self.assertEqual(path.read_text(encoding="utf-8"), text, "第二次一个字节都不该动")
+
+    @NEEDS_GIT
+    def test_dry_run_writes_nothing_and_a_plain_dir_says_so(self):
+        path = self.dst / ".git" / "info" / "exclude"
+        before = path.read_text(encoding="utf-8")
+        self.assertIn("要补", deploy.apply_exclude(self.dst, dry_run=True))
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        plain = self.tmp / "plain"
+        plain.mkdir()
+        self.assertIn("不是 git 检出", deploy.apply_exclude(plain))
+
+    @NEEDS_GIT
+    def test_the_ignored_dir_is_the_one_git_then_hides(self):
+        """补完的行真要让 git 看不见 strata/：用 git check-ignore 问它本人。"""
+        deploy.apply_exclude(self.dst)
+        rc, _ = engine_setup.git_run(["git", "check-ignore", "-q", "--no-index",
+                                      "strata/setup.py"], cwd=self.dst)
+        self.assertEqual(rc, 0, "git 说 strata/ 没被忽略：那几行没写对")
+
 
 class TestApply(unittest.TestCase):
     def setUp(self):
@@ -241,6 +318,23 @@ class TestApply(unittest.TestCase):
         self.assertFalse((self.dst / "neo" / "gone.py").exists())
         self.assertTrue((self.dst / "setup.py").is_file(), "上游的文件一个都不动")
 
+    @NEEDS_GIT
+    def test_apply_adds_the_local_ignore_lines_and_leaves_the_upstream_gitignore_alone(self):
+        """补忽略行走 .git/info/exclude：上游的 .gitignore 是跟踪文件，一个字节都不动。"""
+        ignore = self.dst / ".gitignore"
+        ignore.write_text("/build*/\n/engine/\n", encoding="utf-8")
+        before = ignore.read_bytes()
+        result = deploy.apply(self.src, self.dst, exe_path=self.exe, ref=self.ref,
+                              dry_run=False, tests=False)
+        self.assertTrue(result["ok"], result.get("notes"))
+        self.assertIn(deploy.EXCLUDE_NAME, result["wrote"])
+        text = (self.dst / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        self.assertIn(f"/{paths.ENGINE_DIR_NAME}/", text)
+        self.assertEqual(ignore.read_bytes(), before, "上游的 .gitignore 一个字节都不动")
+        rc, out = engine_setup.git_run(["git", "status", "--porcelain"], cwd=self.dst)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("exclude", out, ".git/info/exclude 是 .git 里的东西，git status 不该看见它")
+
 
 class TestCli(unittest.TestCase):
     def setUp(self):
@@ -284,6 +378,37 @@ class TestCli(unittest.TestCase):
     def test_to_is_required(self):
         with self.assertRaises(SystemExit):
             quiet(["--json"])
+
+    def test_a_replacement_char_in_the_check_tail_still_prints(self):
+        """快套件的尾部带 U+FFFD 时，报告要打印出来，不能崩在打印上。
+
+        2026-10-13 实测：`--apply` 跑完，体检都过了，打印套件尾部时抛
+        UnicodeEncodeError（cp936 的控制台装不下 U+FFFD）—— 换版脚本把结果弄丢了。
+        这一条把 stdout 换成只认 ASCII 的流，模拟那种控制台。
+        """
+        import sys
+
+        ref = self.tmp / "ref.json"
+        write(ref, json.dumps(ref_at(self.head)))
+        tail = "Ran 400 tests\nok \ufffd\ufffd 中文尾部\n"
+
+        def fake_checks(target, python=""):
+            return {"webcheck": {"code": 0, "tail": tail},
+                    "suite": {"code": 0, "tail": tail}}
+
+        was = deploy.post_checks
+        deploy.post_checks = fake_checks
+        self.addCleanup(lambda: setattr(deploy, "post_checks", was))
+        buffer, restore = wide_console()
+        self.addCleanup(restore)
+        code = deploy.main(["--from", str(self.src), "--to", str(self.dst),
+                            "--ref", str(ref), "--exe", str(self.src / "NeoStrata.exe"),
+                            "--apply"])
+        sys.stdout.flush()
+        out = buffer.getvalue().decode("utf-8", "replace")
+        self.assertEqual(code, 0, out)
+        self.assertIn("suite：OK", out)
+        self.assertIn("Ran 400 tests", out)
 
 
 if __name__ == "__main__":

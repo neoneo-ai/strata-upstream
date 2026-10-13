@@ -133,4 +133,43 @@ label input {
 .step.ok { color: var(--ok); }
 .step.warn { color: var(--warn); }
 .log.small { min-height: 120px; max-height: 200px; margin-top: 10px; }
+/* 「复制 token」的那把完整 key：只读、只在被要出来的那一刻出现（app.js 里 toggle .hidden），
+   平时这一行只有掩码。全选好选，所以给足宽度与等宽字体。 */
+.keyval {
+  display: block; width: 100%; margin-top: 6px; padding: 6px 9px;
+  background: #0b0d11; color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+}
+.keyval.hidden { display: none; }   /* .keyval 在后面，会把上面的 .hidden 顶掉，所以补这一条 */
+
+/* ---------- 模型页：可安装清单（GET /neo/catalog） ---------- */
+.rec { color: var(--accent); line-height: 1.7; margin: 6px 0 10px; }
+.cat { display: flex; flex-direction: column; gap: 8px; }
+.cat-row {
+  display: flex; align-items: center; gap: 12px; background: var(--bg3);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px;
+}
+.cat-info { flex: 1; min-width: 0; }
+.cat-row .name { font-weight: 600; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.cat-row .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.cat-row.rec { border-color: var(--accent); }
+.cat-row.has { opacity: .72; }
+.cat-row.off { opacity: .55; }
+.tag {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 400;
+  background: var(--bg2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.tag.rec { color: var(--accent); border-color: #2f4b70; }
+.tag.ok { color: var(--ok); border-color: #2c5c42; }
+.tag.warn { color: var(--warn); border-color: #5a4a25; }
+
+/* 模型页的"下载源"那一排：自动 / Hugging Face / ModelScope / hf-mirror 镜子 */
+.src { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
+.src label { color: var(--muted); font-size: 13px; }
+.src select {
+  background: var(--bg3); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 9px; font: inherit; min-width: 230px;
+}
+.src button { padding: 6px 10px; }
+.src-note { font-size: 12px; line-height: 1.6; margin: 2px 0 10px; }
+
 

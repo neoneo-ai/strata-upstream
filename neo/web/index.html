@@ -37,9 +37,11 @@
   <section id="page-status" class="page on">
     <div id="guide" class="guide hidden">
       <h2>这台机器还没装模型</h2>
-      <p>Neo 是 Strata 的管理器，模型要先装好。在项目文件夹里运行 <code>START-HERE.bat</code>
-         （Windows）或 <code>./setup.sh</code>（Linux），装完回到这个窗口就能启动。</p>
+      <p>Neo 是 Strata 的管理器，模型要先装好。到「模型」页看这台机器的内存该装哪一个，点「安装」
+         就行；也可以在项目文件夹里运行 <code>START-HERE.bat</code>（Windows）或
+         <code>./setup.sh</code>（Linux），装完回到这个窗口就能启动。</p>
       <div class="row">
+        <button id="guide-models" class="primary">去装模型</button>
         <button id="guide-log" class="primary">看安装日志</button>
         <button id="guide-reload">重新检查</button>
       </div>
@@ -81,6 +83,35 @@
 
   <section id="page-models" class="page">
     <div class="panel">
+      <h3>下载安装模型</h3>
+      <p class="muted" id="cat-machine">—</p>
+      <div class="src">
+        <label for="cat-src-select">下载源</label>
+        <select id="cat-src-select"></select>
+        <button id="cat-src-retest">重测连通性</button>
+      </div>
+      <p class="muted src-note" id="cat-src-note">—</p>
+      <div id="cat-rec" class="rec">—</div>
+      <div id="cat-list" class="cat"></div>
+      <div class="row">
+        <button id="cat-refresh">刷新</button>
+        <button id="cat-copy">复制推荐命令</button>
+      </div>
+      <p class="muted path" id="cat-cmd"></p>
+      <pre id="cat-log" class="log small"></pre>
+      <p class="muted">清单来自 <code>setup.py</code> 的安装菜单（Neo 只读它这两张表，不跑它）。
+        点「安装」就是后台跑 <code>setup.py --yes --no-start --family … --model …</code>：
+        下载要几十分钟，输出进 <code>neo/state/logs/wizard.log</code>。装完在下面的
+        「这台机器上的模型」里就能启动。推荐按内存来，分档见 <code>docs/AI_SETUP.md</code>
+        第 3 步与 <code>docs/MODELS.md</code>。</p>
+      <p class="muted">下载源默认按探测建议：两个源都通就走 <code>Hugging Face</code>（上游默认），
+        只有 <code>ModelScope</code> 通就走 <code>--source modelscope</code>。上面那一排可以自己换，
+        选中的记在 <code>neo/state/source.json</code>，下一次安装就用它；镜子那条路给
+        <code>setup.py</code> 设 <code>HF_ENDPOINT=https://hf-mirror.com</code>（<code>--source</code>
+        里没有镜子这个选项）。</p>
+    </div>
+
+    <div class="panel">
       <h3>这台机器上的模型</h3>
       <div id="models" class="models"></div>
       <p class="muted">列表来自项目根目录的 strata-*.json，最近用过的排最前。换模型会重启服务。</p>
@@ -121,17 +152,21 @@
         <tr><th>状态</th><td id="lan-note">—</td></tr>
         <tr><th>本机地址</th><td id="lan-loopback" class="path">—</td></tr>
         <tr><th>局域网地址</th><td id="lan-bases" class="path">—</td></tr>
-        <tr><th>token</th><td id="lan-key">—</td></tr>
+        <tr><th>token</th><td><span id="lan-key">—</span>
+          <input id="lan-key-value" class="path keyval hidden" type="text" readonly
+                 spellcheck="false" autocomplete="off" autocapitalize="off"></td></tr>
         <tr><th>防火墙</th><td id="lan-firewall" class="path">—</td></tr>
       </table>
       <div class="row">
         <button id="lan-token" class="primary">生成 token</button>
+        <button id="lan-copy-key">复制 token</button>
         <button id="lan-copy-base">复制服务地址</button>
         <button id="lan-copy-fw">复制防火墙命令</button>
       </div>
       <p class="muted">绑定地址在「设置」页改（0.0.0.0 = 也听局域网）。绑了局域网就必须有
          token：这台机器上任何网页都能连这个端口。生成 token 后要点「停止」再「启动」，
-         正在跑的服务才会按这把 key 认。</p>
+         正在跑的服务才会按这把 key 认。「复制 token」取的是当前生效的那把，只有本机
+         （127.0.0.1）来的请求能拿到完整 key，完整 key 只显示在这一个输入框里。</p>
     </div>
 
     <div class="panel">

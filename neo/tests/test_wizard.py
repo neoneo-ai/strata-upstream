@@ -2,9 +2,13 @@
 
 不跑真的 setup.py（那要下载模型）：跑的是临时目录里一个只会打印的 setup.py。
 netprobe 的探测结果用假的，不碰网络。
+下载源切换（TestSourceSwitch 与 TestRun）：用户点的源怎么变成 --source 或 HF_ENDPOINT、
+run_setup() 把环境真的带进子进程（跑一个打印 os.environ 的桩 setup.py）、wizard.log 头部写清
+这次带了什么环境、认不得的源不起子进程。
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -61,6 +65,55 @@ class TestSetupArgv(SourceCase):
         argv = wizard.setup_argv(ROOT, port=8080)
         self.assertEqual(Path(argv[1]), Path(ROOT) / "setup.py")
 
+    def test_family_and_model_go_through_as_setup_py_flags(self):
+        argv = wizard.setup_argv(ROOT, port=8080, family="coder", model="IQ1_M")
+        self.assertEqual(argv[argv.index("--family") + 1], "coder")
+        self.assertEqual(argv[argv.index("--model") + 1], "IQ1_M")
+
+    def test_no_family_by_default_leaves_the_choosing_to_setup_py(self):
+        argv = wizard.setup_argv(ROOT, port=8080)
+        self.assertNotIn("--family", argv, "默认路径不该出现 --family")
+        self.assertNotIn("--model", argv, "默认路径不该出现 --model")
+
+    def test_family_comes_before_the_model(self):
+        argv = wizard.setup_argv(ROOT, port=8080, family="qwen", model="IQ3_S")
+        self.assertLess(argv.index("--family"), argv.index("--model"))
+
+
+class TestSourceSwitch(SourceCase):
+    """模型页选中一个下载源后，setup.py 那条命令长什么样（镜子走 HF_ENDPOINT，不是 --source）。"""
+
+    def test_probe_choice_is_the_same_command_as_no_choice(self):
+        self.assertEqual(wizard.setup_argv(ROOT, port=8080),
+                         wizard.setup_argv(ROOT, port=8080, source="probe"))
+
+    def test_probe_choice_follows_the_probe(self):
+        argv = wizard.setup_argv(ROOT, port=8080, source="probe")
+        self.assertEqual(argv[argv.index("--source") + 1], "modelscope",
+                         "FAKE_NET 说 huggingface.co 连不上")
+
+    def test_a_named_source_is_explicit_in_the_command(self):
+        argv = wizard.setup_argv(ROOT, port=8080, source="modelscope")
+        self.assertEqual(argv[argv.index("--source") + 1], "modelscope")
+        argv = wizard.setup_argv(ROOT, port=8080, source="huggingface")
+        self.assertEqual(argv[argv.index("--source") + 1], "huggingface")
+
+    def test_the_mirror_adds_no_source_flag_but_an_env_var(self):
+        argv = wizard.setup_argv(ROOT, port=8080, source="mirror")
+        self.assertNotIn("--source", argv, "--source 里没有镜子这一项")
+        self.assertIn("--yes", argv)
+        self.assertEqual(wizard.source_env("mirror"),
+                         {"HF_ENDPOINT": "https://hf-mirror.com"})
+
+    def test_other_sources_add_no_env(self):
+        for source in ("", "probe", "auto", "modelscope", "huggingface"):
+            self.assertEqual(wizard.source_env(source), {}, f"{source} 不该动环境")
+
+    def test_cli_takes_the_mirror_and_the_probe(self):
+        self.assertEqual(wizard.parse_args(["--source", "mirror"]).source, "mirror")
+        self.assertEqual(wizard.parse_args(["--source", "probe"]).source, "probe")
+        self.assertEqual(wizard.parse_args([]).source, "")
+
 
 class TestSteps(SourceCase):
     def setUp(self):
@@ -103,10 +156,14 @@ class TestRun(unittest.TestCase):
         self._probe = netprobe.probe_cached
         netprobe.probe_cached = lambda timeout=3.0, force=False, connect=None: dict(
             {"targets": [], "ok": [], "source": "huggingface", "reason": "都连不上", "at": 0.0})
+        # 这台机器上要是本来设了 HF_ENDPOINT，"没选镜子就不该塞"那条检查就没意义了
+        self._endpoint = os.environ.pop("HF_ENDPOINT", "")
 
     def tearDown(self):
         netprobe.probe_cached = self._probe
         state.LOGS = self._logs
+        if self._endpoint:
+            os.environ["HF_ENDPOINT"] = self._endpoint
         self._tmp.cleanup()
 
     def test_missing_setup_py_refuses_to_run(self):
@@ -123,6 +180,40 @@ class TestRun(unittest.TestCase):
         tail = wizard.log_tail()
         self.assertIn("wizard-line", tail)
         self.assertIn("--yes", tail)
+
+    def test_the_family_and_model_reach_the_child_process(self):
+        (self.root / "setup.py").write_text(
+            "import sys\nprint('picked', sys.argv[1:])\n", encoding="utf-8")
+        wizard.run_setup(self.root, family="coder", model="IQ1_M", port=8080)
+        tail = wizard.log_tail()
+        self.assertIn("'--family', 'coder'", tail)
+        self.assertIn("'--model', 'IQ1_M'", tail)
+
+    def test_the_mirror_endpoint_reaches_the_child_and_the_log_line(self):
+        (self.root / "setup.py").write_text(
+            "import os\nprint('endpoint', os.environ.get('HF_ENDPOINT', ''))\n", encoding="utf-8")
+        result = wizard.run_setup(self.root, port=8080, source="mirror")
+        self.assertTrue(result["started"])
+        self.assertEqual(result["env"], {"HF_ENDPOINT": "https://hf-mirror.com"})
+        tail = wizard.log_tail()
+        self.assertIn("endpoint https://hf-mirror.com", tail, "子进程要真的带着这个环境变量")
+        header = tail.split("=== ")[-1].splitlines()[0]
+        self.assertIn("HF_ENDPOINT=https://hf-mirror.com", header, "日志头部要写清带了什么")
+        self.assertIn("--yes", header)
+
+    def test_a_normal_source_leaves_the_environment_alone(self):
+        (self.root / "setup.py").write_text(
+            "import os\nprint('endpoint', os.environ.get('HF_ENDPOINT', 'none'))\n",
+            encoding="utf-8")
+        wizard.run_setup(self.root, port=8080, source="modelscope")
+        tail = wizard.log_tail()
+        self.assertIn("endpoint none", tail, "没选镜子就不该塞 HF_ENDPOINT")
+        self.assertIn("--source modelscope", tail)
+
+    def test_cli_accepts_a_family(self):
+        args = wizard.parse_args(["--family", "coder", "--model", "IQ1_M"])
+        self.assertEqual((args.family, args.model), ("coder", "IQ1_M"))
+        self.assertEqual(wizard.parse_args([]).family, "")
 
 
 if __name__ == "__main__":

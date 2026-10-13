@@ -24,7 +24,8 @@ M2/M3 加的（默认没人点就什么都不发生，读接口不写任何文�
 
     GET  /neo/net              下载源探测（huggingface / 镜子 / ModelScope 的连通与时延）
     GET  /neo/lan              局域网与 token 现状（地址、有没有 key、防火墙命令）
-    POST /neo/token            生成一把 token 并交给服务（写 launcher.json）
+    POST /neo/token            {"action":"new|reveal"} 生成一把 token（写 launcher.json）
+                               或把现在这把原样交回页面（reveal：只读，且只认本机来的请求）
     GET  /neo/connect          四个 agent 的接入配方（env / 要清空的变量 / 命令）
     POST /neo/connect          把一个 provider 写进 agent 的配置文件（先备份 .neo-bak）
     GET  /neo/wizard           安装向导现状（缺什么、建议的源、命令、日志尾部）
@@ -138,6 +139,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):          # 控制台请求不进日志，太吵
         pass
 
+    def _loopback_peer(self) -> bool:
+        """这个请求是不是从本机来的 —— 看连接的对端地址，不看 Host 头（头是客户端自己写的）。"""
+        return str(self.client_address[0]).strip("[]") in LOCAL_HOSTS
+
     # ---------------- 静态页面 ----------------
     def _static(self, name: str) -> None:
         f = WEB_DIR / name
@@ -191,6 +196,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.connect_recipes())
         elif path == "/neo/wizard":
             self._json(200, self.server.wizard_status())
+        elif path == "/neo/catalog":
+            self._json(200, self.server.model_catalog(
+                fresh="fresh=1" in urlsplit(self.path).query))
         else:
             self._json(404, {"error": "not found"})
 
@@ -219,11 +227,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/neo/config":
             self._json(200, self.server.apply_config(body))
         elif path == "/neo/token":
-            self._json(200, self.server.make_token())
+            self._json(200, self.server.make_token(body, loopback=self._loopback_peer()))
         elif path == "/neo/connect":
             self._json(200, self.server.connect_write(str(body.get("agent") or "")))
         elif path == "/neo/wizard":
             self._json(200, self.server.wizard_run(body))
+        elif path == "/neo/install":
+            self._json(200, self.server.model_install(body))
+        elif path == "/neo/source":
+            self._json(200, self.server.model_source(body))
         elif path in ("/neo/open", "/neo/open-log"):
             self._shell_action("open_page" if path == "/neo/open" else "open_log", body)
         else:
@@ -313,6 +325,9 @@ class ConsoleServer:
         httpd.connect_write = self.connect_write
         httpd.wizard_status = self.wizard_status
         httpd.wizard_run = self.wizard_run
+        httpd.model_catalog = self.model_catalog
+        httpd.model_install = self.model_install
+        httpd.model_source = self.model_source
         httpd.shell = self.shell
         self.httpd = httpd
         self.port = httpd.server_address[1]
@@ -370,15 +385,51 @@ class ConsoleServer:
         return tokens.token_status(self.supervisor.port, self.supervisor.host,
                                    self.supervisor.api_key)
 
-    def make_token(self) -> dict:
-        """生成一把 token，写进 launcher.json 并交给监督（下一次启动服务带上）。"""
+    def make_token(self, body: dict | None = None, loopback: bool = True) -> dict:
+        """token 的四个动作。默认是 new（页面上的「生成 token」）。
+
+        new    ：生成一把 sk-neo-<32 hex>，写进 launcher.json、进 key 缓存、交给监督。
+        reveal ：只读，不写任何文件 —— 给「复制 token」用。完整 key 只交给本机来的请求
+                 （对端地址是 127.0.0.1/::1）；从别的地址来的请求只回掩码。
+        unset  ：把服务上的 key 清掉（launcher.json 里写空），key 缓存留着。
+        forget ：把现在这把 key 从 key 缓存里删掉（服务上的 key 不动）。
+        """
         from . import state, tokens
+        action = str((body or {}).get("action") or "new")
+        key = str(self.supervisor.api_key or "")
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        if action == "reveal":
+            if not key:
+                return {"ok": False, "api_key": "", "api_key_masked": "",
+                        "revealed": False,
+                        "note": "服务现在没有 token：点「生成 token」先来一把"}
+            if not loopback:
+                return {"ok": False, "api_key": "", "api_key_masked": tokens.mask_of(key),
+                        "revealed": False,
+                        "note": "完整 token 只交给本机来的请求；这台控制台开在 "
+                                f"{self.supervisor.host} 上，这里只给掩码"}
+            return {"ok": True, "api_key": key, "api_key_masked": tokens.mask_of(key),
+                    "revealed": True, "note": "当前生效的 token"}
+        if action == "unset":
+            state.save_launcher_config(api_key="")
+            self.supervisor.api_key = ""
+            return {"ok": True, "api_key": "", "api_key_masked": "", "revealed": False,
+                    "note": "已清掉服务上的 token（key 缓存留着，切回绑法时还能用）"}
+        if action == "forget":
+            removed = tokens.forget_key("", key) if key else 0
+            return {"ok": True, "api_key": "", "api_key_masked": "", "revealed": False,
+                    "removed": removed, "base": base,
+                    "note": f"已从 key 缓存里删掉 {removed} 条" if removed
+                            else "key 缓存里没有这把 key"}
+        if action != "new":
+            return {"ok": False, "error": f"不认识的 action：{action}"}
         key = tokens.new_key()
         base = tokens.base_for(self.supervisor.host, self.supervisor.port)
         tokens.remember_key(base, key, "minted")
         state.save_launcher_config(api_key=key)
         self.supervisor.api_key = key
         return {"ok": True, "api_key": key, "api_key_masked": tokens.mask_of(key),
+                "revealed": True,
                 "note": "已写进 neo/state/launcher.json 并交给监督：正在跑的那个服务"
                         "还按启动时的设置认，点一次\"停止\"再\"启动\"就按这把 key 认"}
 
@@ -418,19 +469,84 @@ class ConsoleServer:
         return {"ok": bool(result.get("written")), "agent": agent, **result}
 
     def wizard_status(self) -> dict:
-        from . import wizard
+        from . import models, wizard
         return wizard.status(self.root_dir(), port=self.supervisor.port,
-                             host=self.supervisor.host, api_key=self.supervisor.api_key)
+                             host=self.supervisor.host, api_key=self.supervisor.api_key,
+                             source=models.source_choice())
 
     def wizard_run(self, body: dict) -> dict:
-        from . import wizard
+        from . import models, wizard
         return wizard.run_setup(self.root_dir(),
+                                family=str(body.get("family") or ""),
                                 model=str(body.get("model") or ""),
                                 port=self.supervisor.port,
                                 host=self.supervisor.host,
                                 api_key=self.supervisor.api_key,
-                                source=str(body.get("source") or ""),
+                                source=self._source_for(body),
                                 wait=False)
+
+    def model_catalog(self, fresh: bool = False) -> dict:
+        """可安装模型清单 + 这台机器 + 按内存的推荐 + 下载源那一排，外加安装进度。
+
+        读接口，不写任何文件：清单是 ast 读 setup.py 的两张表，装没装是扫根目录的
+        strata-*.json，机器是问内存 / nvidia-smi（60 秒缓存）/ 看盘剩多少，
+        下载源是 netprobe 的缓存（fresh=1 才真去连三次 443）。
+        """
+        from . import models, netprobe, wizard
+        data = models.catalog(self.root_dir(),
+                              sources=models.source_info(net=netprobe.probe_cached(
+                                  force=bool(fresh))))
+        data["wizard"] = wizard.run_state()
+        data["log_tail"] = wizard.log_tail(max_lines=30)
+        return data
+
+    def _source_for(self, body: dict) -> str:
+        """这一趟安装用哪个源：页面传了就用页面的，没传就用记下的那个。"""
+        from . import models
+        return str(body.get("source") or "") or models.source_choice()
+
+    def model_source(self, body: dict) -> dict:
+        """记下模型页选的下载源（probe / huggingface / modelscope / mirror）。
+
+        只写 neo/state/source.json 这一个 Neo 自己的文件，不改 setup.py、不改任何上游文件；
+        认不认得由 models.SOURCE_KEYS 挡，认不得就回 400 形状的错误、什么都不写。
+        """
+        from . import models
+        source = str(body.get("source") or "")
+        if source not in models.SOURCE_KEYS:
+            return {"ok": False, "chosen": models.source_choice(),
+                    "error": f"不认识的下载源：{source or '（空的）'}",
+                    "choices": list(models.SOURCE_KEYS)}
+        models.save_source_choice(source)
+        return {"ok": True, **models.source_info()}
+
+    def model_install(self, body: dict) -> dict:
+        """装一个模型 = 后台跑 setup.py --family X --model Y，输出进 wizard.log。
+
+        Neo 不自己下载：下载、校验、写 strata-*.json 全是 setup.py 的事。
+        菜单里没有这一项就挡回来，不起子进程；已经有一个在跑也挡回来。
+        下载源用页面传的那个，没传就用模型页记下的那个；认不得也挡回来。
+        """
+        from . import models, wizard
+        family = str(body.get("family") or "")
+        model = str(body.get("model") or "")
+        root = self.root_dir()
+        if not models.known(root, family, model):
+            return {"started": False, "code": None,
+                    "notes": [f"安装菜单里没有 --family {family} --model {model} 这一项",
+                              "先看 GET /neo/catalog 里的 models 清单"]}
+        source = self._source_for(body)
+        if source not in models.SOURCE_KEYS:
+            return {"started": False, "code": None,
+                    "notes": [f"不认识的下载源：{source}",
+                              f"选 {' / '.join(models.SOURCE_KEYS)} 里的一个"]}
+        if wizard.run_state()["running"]:
+            return {"started": False, "code": None, "running": True,
+                    "notes": ["已经有一个安装在跑，等它跑完（日志页 /neo/log 与 wizard.log 里能看）"]}
+        return wizard.run_setup(root, family=family, model=model,
+                                port=self.supervisor.port, host=self.supervisor.host,
+                                api_key=self.supervisor.api_key,
+                                source=source, wait=False)
 
 
 def partial_handler(console: ConsoleServer):

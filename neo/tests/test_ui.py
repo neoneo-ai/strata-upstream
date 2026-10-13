@@ -545,7 +545,9 @@ class TestConnectPage(unittest.TestCase):
     """
 
     ROUTES = ("/neo/net", "/neo/lan", "/neo/token", "/neo/connect", "/neo/wizard")
-    CSS = (".agents", ".agent", ".cmd", ".steps")
+    CSS = (".agents", ".agent", ".cmd", ".steps", ".keyval")
+    IDS = ("lan-key", "lan-key-value", "lan-copy-key", "lan-token", "lan-copy-base",
+           "lan-copy-fw")
 
     def setUp(self):
         self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
@@ -572,6 +574,20 @@ class TestConnectPage(unittest.TestCase):
         for needle in self.CSS:
             self.assertIn(needle, self.css, f"style.css 里没有 {needle}")
 
+    def test_the_token_row_has_a_one_click_copy(self):
+        """「复制 token」这条要在窗口里真的能点：按钮、落脚的输入框、接上 reveal 的处理。"""
+        for ident in self.IDS:
+            self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
+        self.assertIn('class="path keyval hidden"', self.html,
+                      "完整 key 的输入框默认得是藏着的，平时这一行只有掩码")
+        self.assertIn("readonly", self.html, "完整 key 的框只读：点一下全选，不会误改")
+        self.assertIn('$("lan-copy-key").onclick', self.js, "按钮没接处理就是点了没反应")
+        self.assertIn('{ action: "reveal" }', self.js, "复制前先向服务要一次当前 key")
+        self.assertIn("setRevealedKey(res.api_key, res.api_key_masked)", self.js,
+                      "生成 token 后要把完整 key 留在页面里，省掉再生成一次")
+        self.assertIn(".keyval.hidden", self.css,
+                      ".keyval 定义在 .hidden 之后会顶掉它，必须补这一条")
+
     def test_load_connect_is_top_level(self):
         depths = js_depth_lines(self.js)
         hits = [k for k, ln in enumerate(self.js.splitlines())
@@ -579,6 +595,74 @@ class TestConnectPage(unittest.TestCase):
         self.assertTrue(hits, "app.js 里没有 loadConnect")
         for k in hits:
             self.assertEqual(depths[k], 0, "loadConnect 不在顶层")
+
+
+class TestModelsPage(unittest.TestCase):
+    """模型页的"下载安装模型"区（GET /neo/catalog / POST /neo/install）。
+
+    与 TestConnectPage 同一类检查：页面写的每个 id、每条路由、每个样式都要真的在，
+    少一个在窗口里是静默的（getElementById 回 null，整段渲染停住）。
+    """
+
+    ROUTES = ("/neo/catalog", "/neo/install", "/neo/source")
+    IDS = ("cat-machine", "cat-rec", "cat-list", "cat-log", "cat-cmd",
+           "cat-refresh", "cat-copy", "cat-src-select", "cat-src-note", "cat-src-retest")
+    CSS = (".rec", ".cat", ".cat-row", ".tag", ".src", ".src-note")
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.html = (ROOT / "neo" / "web" / "index.html").read_text(encoding="utf-8")
+        self.css = (ROOT / "neo" / "web" / "style.css").read_text(encoding="utf-8")
+
+    def test_the_models_page_loads_and_polls_the_catalog(self):
+        self.assertIn('if (name === "models") { loadModels(); loadCatalog(); }', self.js)
+        self.assertIn('if ($("page-models").classList.contains("on")) loadCatalog()', self.js)
+
+    def test_every_route_the_catalog_calls_is_in_the_server(self):
+        server = (ROOT / "neo" / "console_server.py").read_text(encoding="utf-8")
+        for route in self.ROUTES:
+            self.assertIn(route, self.js, f"app.js 里没有 {route}")
+            self.assertIn(route, server, f"服务里没有 {route}")
+
+    def test_every_catalog_id_is_in_the_html(self):
+        for ident in self.IDS:
+            self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
+
+    def test_the_catalog_blocks_have_styles(self):
+        for needle in self.CSS:
+            self.assertIn(needle, self.css, f"style.css 里没有 {needle}")
+
+    def test_load_catalog_is_top_level(self):
+        depths = js_depth_lines(self.js)
+        hits = [k for k, ln in enumerate(self.js.splitlines())
+                if ln.lstrip().startswith("async function loadCatalog(")]
+        self.assertTrue(hits, "app.js 里没有 loadCatalog")
+        for k in hits:
+            self.assertEqual(depths[k], 0, "loadCatalog 不在顶层")
+
+    def test_the_install_button_sends_family_and_model(self):
+        self.assertIn('act("install", { family: m.family, model: m.model, source })', self.js)
+        self.assertIn("--family ${m.family} --model ${m.model}", self.js)
+
+    def test_the_download_source_row_is_wired(self):
+        """模型页的"下载源"切换：select 要填、要发 POST /neo/source、命令预览要跟着变。"""
+        self.assertIn('act("set_source", { source })', self.js)
+        self.assertIn('set_source: ["POST", "/neo/source"]', self.js)
+        self.assertIn('$("cat-src-select").onchange', self.js)
+        self.assertIn("renderSources(data)", self.js)
+        self.assertIn("c.prefix", self.js)
+        self.assertIn("c.suffix", self.js)
+        self.assertIn('<select id="cat-src-select"></select>', self.html)
+        self.assertIn('id="cat-src-retest"', self.html)
+
+    def test_the_install_sends_the_chosen_source(self):
+        self.assertIn('const source = (catalogData && catalogData.sources && '
+                      'catalogData.sources.chosen) || "probe";', self.js)
+
+    def test_the_refresh_and_retest_buttons_reprobe(self):
+        self.assertIn('$("cat-refresh").onclick = () => loadCatalog(true)', self.js)
+        self.assertIn('$("cat-src-retest").onclick = () => loadCatalog(true)', self.js)
+        self.assertIn('fresh ? "?fresh=1" : ""', self.js)
 
 
 if __name__ == "__main__":

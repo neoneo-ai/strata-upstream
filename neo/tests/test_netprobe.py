@@ -1,6 +1,8 @@
 """neo/tests/test_netprobe.py - 下载源探测：判断规则与"要不要给 setup.py 加 --source"。
 
 不碰网络：connect 函数一律是假的。
+用户点的下载源怎么变成命令与环境（--source huggingface|modelscope / HF_ENDPOINT 镜像 / 自动按探测建议）
+在 TestChoiceArgs 里逐条盯着 —— 镜像不能发 `--source mirror`，上游没有这个值。
 """
 from __future__ import annotations
 
@@ -92,6 +94,38 @@ class TestSetupArgs(unittest.TestCase):
                          ["--source", "huggingface"])
         self.assertEqual(netprobe.setup_source_args("huggingface", "modelscope"),
                          ["--source", "modelscope"])
+
+
+class TestChoiceArgs(unittest.TestCase):
+    """模型页"下载源"那一排选中一项等于什么（neo/models.py 用的就是这一个函数）。"""
+
+    def test_the_four_keys_the_models_page_offers(self):
+        self.assertEqual(netprobe.CHOICES, ("probe", "huggingface", "modelscope", "mirror"))
+
+    def test_probe_follows_the_suggestion(self):
+        args, env = netprobe.choice_args("probe", rows=rows(hf=False, ms=True))
+        self.assertEqual(args, ["--source", "modelscope"])
+        self.assertEqual(env, {})
+
+    def test_probe_with_both_reachable_adds_nothing(self):
+        args, _ = netprobe.choice_args("probe", rows=rows(hf=True, ms=True))
+        self.assertEqual(args, [], "两个都通就走上游默认，不加 --source")
+
+    def test_a_named_source_is_passed_through_untouched(self):
+        self.assertEqual(netprobe.choice_args("modelscope", rows=rows(hf=True, ms=True))[0],
+                         ["--source", "modelscope"])
+        self.assertEqual(netprobe.choice_args("huggingface", rows=rows())[0],
+                         ["--source", "huggingface"])
+        self.assertEqual(netprobe.choice_args("auto", rows=rows())[0], ["--source", "auto"])
+
+    def test_the_mirror_is_an_env_var_not_a_source(self):
+        args, env = netprobe.choice_args("mirror", rows=rows(mirror=True))
+        self.assertEqual(args, [], "--source 里没有镜子这一项")
+        self.assertEqual(env, {"HF_ENDPOINT": netprobe.MIRROR_ENDPOINT})
+
+    def test_named_sources_add_no_env(self):
+        for key in ("probe", "huggingface", "modelscope"):
+            self.assertEqual(netprobe.choice_args(key, rows=rows(hf=True, ms=True))[1], {})
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 
     launcher.json   记住的启动设置：root / port / host / api_key / model / engine
     window.json     桌面壳的窗口几何（x, y, w, h）
+    source.json     装模型时选的下载源（probe / huggingface / modelscope / mirror）
     logs/manager.log        壳与监督的日志（写入前裁到尾部 LOG_MAX）
     logs/server-*.log       监督启动的 Strata 服务的完整输出（stdout 与 stderr 都在里面）
 
@@ -31,6 +32,7 @@ LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"
 WINDOW = STATE / "window.json"
 INSTANCE = STATE / "instance.json"
+SOURCE = STATE / "source.json"
 
 MANAGER_LOG = LOGS / "manager.log"
 LOG_MAX = 200_000                           # 反复开关机只增不减：写入前裁到尾部
@@ -77,6 +79,7 @@ LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"
 WINDOW = STATE / "window.json"
 INSTANCE = STATE / "instance.json"
+SOURCE = STATE / "source.json"
 MANAGER_LOG = LOGS / "manager.log"
 
 
@@ -271,6 +274,24 @@ def save_launcher_config(**changes) -> dict:
     cfg.update({k: v for k, v in changes.items() if v is not None})
     write_json(LAUNCHER, cfg)
     return cfg
+
+
+def source_choice() -> str:
+    """装模型时选的那个下载源（"probe" / "huggingface" / "modelscope" / "mirror"）。
+
+    只记 Neo 用户的偏好，认不认得由 neo/models.py 判断（它认得 setup.py 的 --source
+    有哪几个值）；文件坏了回空串，等于"没选过，按探测建议"。
+    """
+    cfg = read_json(SOURCE, {}) or {}
+    if not isinstance(cfg, dict):
+        return ""
+    return str(cfg.get("source") or "")
+
+
+def save_source_choice(source: str) -> str:
+    """记下选中的下载源（整份写入，旧内容留 .bak，与 launcher.json 一样）。"""
+    write_json(SOURCE, {"source": str(source or ""), "at": time.time()})
+    return str(source or "")
 
 # ---------------- 未捕获异常：一条有界的 traceback ----------------
 TRACE_MAX = 4000                            # traceback 总长上限（字符）

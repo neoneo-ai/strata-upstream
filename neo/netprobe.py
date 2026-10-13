@@ -108,6 +108,28 @@ def endpoint_args(source: str, mirror_only: bool = False) -> list[str]:
     return []
 
 
+#: 模型页"下载源"那一排的可选项：
+#: probe = Neo 的默认（按探测建议）；huggingface / modelscope = setup.py --source 的两个值；
+#: mirror = hf-mirror.com 那面镜子，setup.py 的 --source 里没有它，要的是 HF_ENDPOINT。
+CHOICES = ("probe", "huggingface", "modelscope", "mirror")
+MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def choice_args(choice: str, rows=None) -> tuple[list[str], dict[str, str]]:
+    """选中的源等于什么：(给 setup.py 的参数, 还要额外给它的环境变量)。
+
+    probe / 空 = 用探测建议（两个源都通就什么都不加，走上游默认的 Hugging Face）；
+    mirror = 镜子，走 HF_ENDPOINT，--source 里没有这一项；
+    huggingface / modelscope / auto = 用户点名的，原样传 --source，一个字不改。
+    """
+    if choice in ("", "probe"):
+        source = probe_cached()["source"] if rows is None else suggest_source(rows)[0]
+        return setup_source_args(source), {}
+    if choice == "mirror":
+        return [], {"HF_ENDPOINT": MIRROR_ENDPOINT}
+    return setup_source_args("", choice), {}
+
+
 def describe(result: dict) -> list[str]:
     """给页面/终端看的几行话。"""
     lines = [result.get("reason") or "还没量"]

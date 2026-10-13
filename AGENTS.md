@@ -27,7 +27,9 @@ offers the same steps as tools.
 > **Neo's own development repo is split out (2026-10-13): `neoneo-ai/neo-strata`** (local
 > `D:\Work\projects\neostrata`), carrying the 19 commits that touched `neo/`, `docs/NEO_DESKTOP.md` and
 > `NEO-START.bat` (replayed with `git am`, messages/authors/dates kept; the tree is byte-identical -
-> compared by blob hash). This fork is the upstream-tracking and PR base: upstream-side changes
+> compared by blob hash). This fork is the upstream-tracking and PR base (renamed to
+> `neoneo-ai/strata-upstream` the same day, so the old `neoneo-ai/Neo-Strata` URL is now 404 and
+> `origin` here is `https://github.com/neoneo-ai/strata-upstream`): upstream-side changes
 > (`serve/`, `setup.py`) stay here, and Neo development happens in the other repo. `neo/` here stays
 > deployable, so the suite must stay green in both shapes: in a Neo-only repo the engine root is
 > `<repo>/strata` (`python -m neo.engine_setup --ensure` clones the pinned tag there), and

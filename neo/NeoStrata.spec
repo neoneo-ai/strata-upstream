@@ -24,7 +24,9 @@ ROOT_DIR = NEO_DIR.parent
 
 # 控制台页面（app.js / style.css / *.html）打进包里的 web/，运行时从解包目录读
 # （neo/paths.py 的 web_dir()）。
-datas = [(str(NEO_DIR / "web"), "web")]
+# engine_ref.json 是钉住的那一份引擎（neo/engine_setup.py 读它）：exe 单独放在一个
+# 目录里、旁边没有 neo/ 时，pin 只能从包里读，所以它必须跟着 exe 走。
+datas = [(str(NEO_DIR / "web"), "web"), (str(NEO_DIR / "engine_ref.json"), ".")]
 
 # pywebview 按平台在运行时挑后端（webview.platforms.winforms / edgechromium / win32 ...），
 # 这些导入 PyInstaller 看不见，得点名；neo.engines.* 是适配器。

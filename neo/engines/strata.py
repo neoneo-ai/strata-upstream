@@ -223,8 +223,10 @@ class StrataEngine(EngineAdapter):
 
 
 if __name__ == "__main__":                                      # 快速看一眼这台机器装了什么模型
+    from ..paths import strata_root
+
     for item in list_configs(Path(sys.argv[1]) if len(sys.argv) > 1
-                             else safe_resolve(Path(__file__).parent).parents[1]):
+                             else strata_root()[0]):
         print(f"{item['name']:<28} {item['context']:>7}  端口 {item['port']}  "
               f"{'视觉' if item['vision'] else '文本'}  "
               f"{'；'.join(item['missing']) if item['missing'] else '可启动'}")

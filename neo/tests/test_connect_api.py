@@ -18,8 +18,13 @@ import time
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/test_connect_api.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
+
+from ._bootstrap import ENGINE, REPO                # noqa: E402
+
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
 
 from neo import connectors, models, netprobe, state, tokens, wizard     # noqa: E402
 from neo.console_server import ConsoleServer                        # noqa: E402

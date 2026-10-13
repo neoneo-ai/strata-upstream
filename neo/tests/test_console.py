@@ -18,10 +18,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/test_console.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
 
+from ._bootstrap import ENGINE, REPO                # noqa: E402
+
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
+
+from neo import engine_setup                                       # noqa: E402
 from neo import model_settings                                   # noqa: E402
+from neo import netprobe                                         # noqa: E402
 from neo import state                                          # noqa: E402
 from neo import console_server as cs                          # noqa: E402
 from neo.console_server import ConsoleServer                   # noqa: E402
@@ -578,6 +585,68 @@ class TestStrataChannel(unittest.TestCase):
         rest = STRATA_MONITOR_PATH[len(cs.STRATA_PATH):].split("#")[0]
         tail = rest if rest.startswith("/") else "/" + rest
         self.assertIn("" if tail == "/" else tail, cs.STRATA_READ_PATHS)
+
+
+class TestEngineEndpoint(unittest.TestCase):
+    """接入页的引擎卡：GET /neo/engine 的现状与 POST /neo/engine 的动作闸门。
+
+    不起服务、不联网、不 clone：netprobe 换成假的（一次 443 都不连），
+    engine_setup.run_engine 换成记录调用的假函数（真 clone 会联网、会往仓库里写东西）。
+    """
+
+    def setUp(self):
+        self.sup = Supervisor(FakeAdapter(ROOT), 8080)
+        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
+        self._probe = netprobe.probe_cached
+
+        def fake_probe(timeout=3.0, force=False, connect=None):
+            return {"targets": [{"host": "github.com", "what": "github", "ok": True, "ms": 20.0}],
+                    "ok": ["github.com"], "source": "huggingface", "reason": "测试给的假探测",
+                    "at": 0.0}
+        netprobe.probe_cached = fake_probe
+        self.addCleanup(lambda: setattr(netprobe, "probe_cached", self._probe))
+
+    def test_get_engine_status_has_the_shape_the_page_reads(self):
+        data = self.console.engine_status()
+        for key in ("state", "action", "tag", "sha", "head", "archive", "git",
+                    "clone_command", "steps", "ready", "notes", "run", "log_tail"):
+            self.assertIn(key, data, f"引擎卡要读 {key}")
+        self.assertIn(data["state"], engine_setup.STATE_ACTION)
+        self.assertEqual([x["name"] for x in data["steps"]],
+                         ["引擎源码", "取源码的路", "交给 setup.py"])
+
+    def test_the_routes_are_wired(self):
+        src = (ROOT / "neo" / "console_server.py").read_text(encoding="utf-8")
+        self.assertIn('path == "/neo/engine"', src)
+        self.assertIn("self.server.engine_status()", src)
+        self.assertIn("self.server.engine_run(body)", src)
+
+    def test_an_unknown_action_is_refused(self):
+        out = self.console.engine_run({"action": "delete"})
+        self.assertFalse(out["started"])
+        self.assertIn("动作", out["error"])
+
+    def test_install_runs_in_background_with_the_supervisors_settings(self):
+        calls = []
+
+        def spy(**kw):
+            calls.append(kw)
+            return {"started": True, "running": True}
+
+        was = engine_setup.run_engine
+        engine_setup.run_engine = spy
+        self.addCleanup(lambda: setattr(engine_setup, "run_engine", was))
+        self.sup.host = "0.0.0.0"
+        self.sup.api_key = "sk-neo-test"
+        out = self.console.engine_run({"action": "install", "zip": "D:/x.zip"})
+        self.assertTrue(out["started"])
+        self.assertEqual(len(calls), 1)
+        kw = calls[0]
+        self.assertEqual(kw["host"], "0.0.0.0")
+        self.assertEqual(kw["api_key"], "sk-neo-test")
+        self.assertEqual(kw["local_zip"], "D:/x.zip")
+        self.assertFalse(kw["wait"], "页面点一下不能把请求线程堵住（clone 要几十分钟）")
+        self.assertTrue(kw["setup"], "取完源码要交给 setup.py，Neo 不自己装")
 
 
 if __name__ == "__main__":

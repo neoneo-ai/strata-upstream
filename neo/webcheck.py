@@ -28,6 +28,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import paths
+
 WEB_DIR = "neo/web"
 PAGE = "index.html"
 SCRIPT_RE = re.compile(r'<script src="/([^"]+)"\s*>\s*</script>')
@@ -215,7 +217,7 @@ def problems(root: Path, use_node: bool = True) -> list[str]:
 
 def main(argv=None) -> int:
     """命令行：python -m neo.webcheck [根目录]。不干净回 1。"""
-    root = Path(__file__).resolve().parents[1]
+    root = paths.app_root()
     args = list(sys.argv[1:] if argv is None else argv)
     if args:
         root = Path(args[0])

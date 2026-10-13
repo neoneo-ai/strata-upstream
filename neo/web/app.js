@@ -47,6 +47,7 @@ const ROUTES = {
   lan: ["GET", "/neo/lan"], token: ["POST", "/neo/token"], net: ["GET", "/neo/net"],
   connect: ["GET", "/neo/connect"], connect_write: ["POST", "/neo/connect"],
   wizard: ["GET", "/neo/wizard"], wizard_run: ["POST", "/neo/wizard"],
+  engine: ["GET", "/neo/engine"], engine_run: ["POST", "/neo/engine"],
   catalog: ["GET", "/neo/catalog"], install: ["POST", "/neo/install"],
   set_source: ["POST", "/neo/source"],
   upstream: ["GET", "/neo/upstream"], remote: ["GET", "/neo/remote"],
@@ -561,13 +562,33 @@ function renderWizard(w) {
   $("wizard-run").textContent = (w.run && w.run.running) ? t("安装中…") : t("开始安装");
 }
 
+let engineCmd = "";
+
+function renderEngine(e) {
+  const box = $("engine-steps");
+  box.innerHTML = "";
+  (e.steps || []).forEach((s) => {
+    const line = document.createElement("div");
+    line.className = "step" + (s.ok ? " ok" : " warn");
+    line.textContent = `${s.ok ? "✓" : "—"} ${s.name}：${s.text}`;
+    box.append(line);
+  });
+  engineCmd = e.clone_command || "";
+  $("engine-cmd").textContent = `${e.tag || "?"} · ${(e.sha || "").slice(0, 12)} · ${e.state || "?"}：`
+    + engineCmd;
+  $("engine-log").textContent = e.log_tail || t("（还没有引擎日志）");
+  $("engine-run").disabled = !!(e.run && e.run.running);
+  $("engine-run").textContent = (e.run && e.run.running) ? t("安装中…") : t("按 pin 安装引擎");
+}
+
 async function loadConnect() {
-  const [lan, conn, wizard] = await Promise.all([
-    api("lan"), api("connect"), api("wizard"),
+  const [lan, conn, wizard, engine] = await Promise.all([
+    api("lan"), api("connect"), api("wizard"), api("engine"),
   ]);
   if (lan && !lan.error) renderLan(lan);
   if (conn && !conn.error) renderAgents(conn);
   if (wizard && !wizard.error) renderWizard(wizard);
+  if (engine && !engine.error) renderEngine(engine);
 }
 
 $("lan-token").onclick = async () => {
@@ -618,6 +639,18 @@ $("wizard-copy").onclick = async () => {
   const ok = await copyText(wizardCmd);
   $("wizard-copy").textContent = ok ? t("已复制") : t("复制失败");
   setTimeout(() => { $("wizard-copy").textContent = t("复制安装命令"); }, 4000);
+};
+$("engine-run").onclick = async () => {
+  const res = await act("engine_run", { action: "install" });
+  if (!res) return;
+  note(res.started ? t("引擎已在后台跑，输出进 neo/state/logs/engine.log")
+                   : (res.error || (res.notes || []).join("；")));
+  setTimeout(async () => { const e = await api("engine"); if (e && !e.error) renderEngine(e); }, 3000);
+};
+$("engine-copy").onclick = async () => {
+  const ok = await copyText(engineCmd);
+  $("engine-copy").textContent = ok ? t("已复制") : t("复制失败");
+  setTimeout(() => { $("engine-copy").textContent = t("复制 clone 命令"); }, 4000);
 };
 
 // ---------------- 模型页：在跑的服务（Neo 代发上游只读端点）----------------

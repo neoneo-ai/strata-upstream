@@ -16,9 +16,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/test_model_settings.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
+
+from ._bootstrap import ENGINE, REPO                # noqa: E402
+
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
 
 from neo import gguf_meta, model_settings, state              # noqa: E402
 

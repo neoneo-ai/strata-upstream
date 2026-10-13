@@ -10,8 +10,13 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/test_netprobe.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
+
+from ._bootstrap import ENGINE, REPO                # noqa: E402
+
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
 
 from neo import netprobe                                            # noqa: E402
 
@@ -23,18 +28,25 @@ def fake_connect(ok_hosts, ms=42.0):
     return connect
 
 
-def rows(hf=False, ms=False, mirror=False):
+def rows(hf=False, ms=False, mirror=False, github=True):
     return netprobe.probe(connect=fake_connect(
         {("huggingface.co" if hf else ""), ("www.modelscope.cn" if ms else ""),
-         ("hf-mirror.com" if mirror else "")} - {""}))["targets"]
+         ("hf-mirror.com" if mirror else ""), ("github.com" if github else "")} - {""}))["targets"]
 
 
 class TestProbe(unittest.TestCase):
-    def test_rows_cover_the_three_hosts(self):
+    def test_rows_cover_the_four_hosts(self):
         result = netprobe.probe(connect=fake_connect({"huggingface.co"}))
         hosts = {r["host"] for r in result["targets"]}
-        self.assertEqual(hosts, {"huggingface.co", "hf-mirror.com", "www.modelscope.cn"})
+        self.assertEqual(hosts, {"huggingface.co", "hf-mirror.com", "www.modelscope.cn",
+                                 "github.com"})
         self.assertEqual(result["ok"], ["huggingface.co"])
+
+    def test_github_is_probed_but_never_suggested_as_a_model_source(self):
+        """github.com 是给引擎源码树量的（neo/engine_setup.py），不参与模型源建议。"""
+        source, _ = netprobe.suggest_source(rows(github=True))
+        self.assertNotEqual(source, "github")
+        self.assertIn("github.com", netprobe.TARGETS[3]["host"])
 
     def test_latency_is_recorded(self):
         result = netprobe.probe(connect=fake_connect({"huggingface.co"}, ms=12.5))

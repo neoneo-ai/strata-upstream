@@ -174,6 +174,11 @@ Object.assign(PHRASES, {
   '或它的模型表读不出来（这不是 Strata 的根目录？）': 'or its model tables cannot be parsed (is this not a Strata root?)',
   '（安装刚起步，还没有输出）': '(install just started, no output yet)',
   '（还没有安装日志）': '(no install log yet)',
+  '（还没有引擎日志）': '(no engine log yet)',
+  '按 pin 安装引擎': 'Install the pinned engine',
+  '复制 clone 命令': 'Copy the clone command',
+  '引擎已在后台跑，输出进 neo/state/logs/engine.log':
+    'The engine install is running in the background; output goes to neo/state/logs/engine.log',
   '（还没有日志）': '(no log yet)',
   '下载源记下了：': 'Download source saved: ',
   '，下一次安装就用它': ', the next install will use it',
@@ -433,6 +438,16 @@ Object.assign(BLOCKS, {
   'wizard.refresh': 'Re-probe the network',
   'wizard.run': 'Start install',
   'wizard.copy': 'Copy the install command',
+  'panel.engine': 'Engine source tree',
+  'engine.run': 'Install the pinned engine',
+  'engine.copy': 'Copy the clone command',
+  'engine.note': 'Neo only ever takes the source pinned in <code>neo/engine_ref.json</code> ' +
+    '(<code>git clone --depth 1</code>; with no git it downloads the zip and unpacks it only ' +
+    'when the SHA-256 matches the pin) into <code>strata/</code>. venv, dependencies, engine ' +
+    'binaries and models all stay with the upstream <code>setup.py</code> - Neo installs none ' +
+    'of them itself. Everything this page writes lands in <code>strata/</code> and ' +
+    '<code>neo/state/</code>; no upstream file is touched, and Neo refuses to touch a tree ' +
+    'someone has modified (<code>dirty</code>).',
   'panel.settings': 'Launch settings',
   'set.port': 'Strata port',
   'set.host': 'Bind address',

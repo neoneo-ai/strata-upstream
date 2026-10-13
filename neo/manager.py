@@ -50,9 +50,12 @@ MUTEX_BASE = "Local\\Neo.Strata.SingleInstance"
 
 
 def default_root() -> str:
-    """Strata 的根目录：exe 跑就是 exe 所在目录（exe 就是设计成放进 Strata 目录的），
-    源码跑就是 neo/ 的上一层。"""
-    return str(NEO_DIR if paths.is_frozen() else NEO_DIR.parent)
+    """Strata 的根目录，解析规则见 neo/paths.py 的 strata_root()。
+
+    exe 放进 Strata 根目录时就是 exe 所在目录（今天的行为，逐字节不变）；
+    exe 单独放在一个目录里时是它旁边的 strata/（Neo 的向导 clone 出来的那一份）。
+    """
+    return str(paths.strata_root()[0])
 
 # 控制台闸门与有界 traceback 要在 import webview 之前装：logging 的 StreamHandler 抓的是
 # 当时 sys.stderr 那个对象，装晚了就管不住 pywebview/pythonnet 往控制台打的内部日志

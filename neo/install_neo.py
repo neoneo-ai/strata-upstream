@@ -12,10 +12,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import paths
 from .paths import safe_resolve
 
 NEO_DIR = safe_resolve(Path(__file__).parent)
-ROOT = NEO_DIR.parent
+ROOT = paths.strata_root()[0]               # Strata 的根目录：.venv 与 strata-*.json 都在那里
 REQ = NEO_DIR / "requirements-neo.txt"
 
 

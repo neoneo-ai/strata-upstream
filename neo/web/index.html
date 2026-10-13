@@ -267,6 +267,22 @@
     </div>
 
     <div class="panel">
+      <h3 data-i18n="panel.engine">引擎源码树</h3>
+      <div id="engine-steps" class="steps"></div>
+      <div class="row">
+        <button id="engine-run" class="primary" data-i18n="engine.run">按 pin 安装引擎</button>
+        <button id="engine-copy" data-i18n="engine.copy">复制 clone 命令</button>
+      </div>
+      <p class="muted" id="engine-cmd"></p>
+      <pre id="engine-log" class="log small"></pre>
+      <p class="muted" data-i18n="engine.note">Neo 只按 <code>neo/engine_ref.json</code> 钉住的那一个
+        tag 取源码（<code>git clone --depth 1</code>；没有 git 就下载 zip，SHA-256 与 pin 一致才解压），
+        放进 <code>strata/</code>。venv、依赖、引擎二进制、模型全交给上游的 <code>setup.py</code>，
+        Neo 一个都不自己装。这一页写过的东西都在 <code>strata/</code> 与 <code>neo/state/</code> 里，
+        上游文件一个不改；目录里有人改过（<code>dirty</code>）时 Neo 拒绝动它。</p>
+    </div>
+
+    <div class="panel">
       <h3 data-i18n="panel.wizard">安装向导</h3>
       <div id="wizard-steps" class="steps"></div>
       <div class="row">

@@ -26,7 +26,7 @@ from .console_io import clean_line
 from .paths import safe_resolve
 
 NEO_DIR = safe_resolve(Path(__file__).parent)
-ROOT = NEO_DIR.parent                       # Strata 的根目录
+ROOT = paths.strata_root()[0]                   # Strata 的根目录（规则见 neo/paths.py）
 STATE = NEO_DIR / "state"
 LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"

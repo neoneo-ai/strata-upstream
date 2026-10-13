@@ -301,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.connect_recipes())
         elif path == "/neo/wizard":
             self._json(200, self.server.wizard_status())
+        elif path == "/neo/engine":
+            self._json(200, self.server.engine_status())
         elif path == "/neo/catalog":
             self._json(200, self.server.model_catalog(
                 fresh="fresh=1" in urlsplit(self.path).query))
@@ -350,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.connect_write(str(body.get("agent") or "")))
         elif path == "/neo/wizard":
             self._json(200, self.server.wizard_run(body))
+        elif path == "/neo/engine":
+            self._json(200, self.server.engine_run(body))
         elif path == "/neo/install":
             self._json(200, self.server.model_install(body))
         elif path == "/neo/source":
@@ -501,7 +505,7 @@ class ConsoleServer:
     # POST /neo/token（launcher.json）、POST /neo/connect（agent 的配置，先备份）、
     # POST /neo/wizard（跑 setup.py，输出进 wizard.log）。
     def root_dir(self):
-        return getattr(self.supervisor.adapter, "root", None) or paths.app_dir().parent
+        return getattr(self.supervisor.adapter, "root", None) or paths.strata_root()[0]
 
     def net_info(self, fresh: bool = False) -> dict:
         from . import netprobe
@@ -619,6 +623,42 @@ class ConsoleServer:
                                 api_key=self.supervisor.api_key,
                                 source=self._source_for(body),
                                 wait=False)
+
+    # ---- 引擎源码树（neo/engine_setup.py）：按 pin clone / 对齐，再交给 setup.py ----
+    def engine_status(self) -> dict:
+        """引擎源码树现状。读接口：不联网、不写文件（plan 是纯函数）。"""
+        from . import engine_setup
+        try:
+            return engine_setup.status()
+        except engine_setup.EngineRefError as exc:
+            return {"state": "bad_ref", "action": "pin 读不出来", "ready": False,
+                    "steps": [], "notes": [str(exc)], "run": engine_setup.run_state(),
+                    "log_tail": engine_setup.log_tail(max_lines=20)}
+
+    def engine_run(self, body: dict) -> dict:
+        """按 pin 装 / 对齐引擎源码，然后交给 setup.py（后台跑，输出进 engine.log）。
+
+        只有 install / update 两个动作，都是用户点了才动：dirty 与 not_a_git_tree
+        由 engine_setup 自己拒绝，Neo 不动用户改过的东西。
+        """
+        from . import engine_setup
+        action = str(body.get("action") or "install")
+        if action not in ("install", "update"):
+            return {"started": False, "error": f"不认识的动作：{action}"}
+        try:
+            return engine_setup.run_engine(
+                local_zip=str(body.get("zip") or ""),
+                port=self.supervisor.port,
+                host=self.supervisor.host,
+                api_key=self.supervisor.api_key,
+                family=str(body.get("family") or ""),
+                model=str(body.get("model") or ""),
+                source=self._source_for(body),
+                setup=bool(body.get("setup", True)),
+                wait=False)
+        except engine_setup.EngineRefError as exc:
+            return {"started": False, "error": str(exc)}
+
 
     def model_catalog(self, fresh: bool = False) -> dict:
         """可安装模型清单 + 这台机器 + 按内存的推荐 + 下载源那一排，外加安装进度。
@@ -777,7 +817,7 @@ if __name__ == "__main__":                                      # 单独跑一�
 
     from .engines import make_adapter
     from .supervisor import Supervisor
-    root = paths.app_dir().parent                  # 源码跑是仓库根；exe 跑是 exe 所在目录
+    root = paths.strata_root()[0]               # 解析规则见 neo/paths.py 的 strata_root()
     engine = sys.argv[1] if len(sys.argv) > 1 else "strata"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
     adapter = make_adapter(engine, root)

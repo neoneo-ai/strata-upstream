@@ -7,6 +7,11 @@ Neo 不改上游，全靠上游已有的 CLI 与端点。上游改了名字，�
 内嵌的监控页要读的那些端点也一样：Neo 在控制台上开一条只读通道代发（neo/console_server.py
 的 /strata/），上游保持原样，所以 TestServerApi 里既钉住"上游没有 Neo 需要的改动"，
 也钉住"上游那个页面和它读的端点还在"。
+
+读的是哪一份上游代码：ENGINE（neo/paths.py 的 strata_root()），就是 Neo 运行时真会用到的
+那个引擎根目录 —— 测试绿了说的是"跑在 Neo 真会用的那一份引擎上"。引擎不在时这几条
+干净跳过并说明原因（Neo 单独的仓库里还没装引擎，是正常状态）。
+Neo 自己的文件（neo/ 里那些）读的是 REPO，与引擎在不在无关。
 """
 from __future__ import annotations
 
@@ -15,17 +20,27 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/test_upstream_api.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
+
+from ._bootstrap import ENGINE, REPO, has_engine, no_engine_reason
+
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
 
 
 def text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+#: 读上游文件的测试：引擎不在就跳过，并说明为什么（Neo 单独的仓库里是正常状态）。
+needs_engine = unittest.skipUnless(has_engine(), no_engine_reason())
+
+
+@needs_engine
 class TestServerApi(unittest.TestCase):
     def setUp(self):
-        self.src = text(ROOT / "serve" / "server.py")
+        self.src = text(ENGINE / "serve" / "server.py")
 
     def test_flags_neo_passes_still_exist(self):
         for flag in ("--engine", "--config", "--port", "--host", "--api-key", "--gpu"):
@@ -84,21 +99,22 @@ class TestServerApi(unittest.TestCase):
     def test_totals_and_hardware_keys_neo_reads(self):
         for key in ('"requests"', '"output_tokens"', '"decode_ms"', '"prompt_ms"'):
             self.assertIn(key, self.src, f"serve/server.py 的 totals 里不再出现 {key}")
-        tel = text(ROOT / "serve" / "telemetry.py")
+        tel = text(ENGINE / "serve" / "telemetry.py")
         for key in ('"cpu"', '"ram_used"', '"ram_total"', '"mem_used"', '"mem_total"', '"util"'):
             self.assertIn(key, tel, f"serve/telemetry.py 不再产出 {key}")
 
     def test_web_pages_neo_embeds(self):
-        self.assertTrue((ROOT / "serve" / "web" / "index.html").is_file())
-        self.assertTrue((ROOT / "serve" / "web" / "monitor.html").is_file())
+        self.assertTrue((ENGINE / "serve" / "web" / "index.html").is_file())
+        self.assertTrue((ENGINE / "serve" / "web" / "monitor.html").is_file())
         self.assertIn("monitor.html", self.src)
 
 
+@needs_engine
 class TestSetupApi(unittest.TestCase):
     """M2 要用的 setup.py 参数，先把"还在不在"钉住。"""
 
     def setUp(self):
-        self.src = text(ROOT / "setup.py")
+        self.src = text(ENGINE / "setup.py")
 
     def test_flags_neo_will_use(self):
         for flag in ("--model", "--family", "--port", "--yes", "--check", "--no-start",
@@ -131,7 +147,7 @@ class TestNoUpstreamEdits(unittest.TestCase):
     """Neo 的约定：不改上游。上游文件的 git 状态不该被 Neo 改动。"""
 
     def test_neo_dir_is_self_contained(self):
-        files = sorted(p.name for p in (ROOT / "neo").iterdir())
+        files = sorted(p.name for p in (REPO / "neo").iterdir())
         self.assertIn("manager.py", files)
         self.assertIn("supervisor.py", files)
         self.assertIn("console_server.py", files)
@@ -141,8 +157,9 @@ class TestNoUpstreamEdits(unittest.TestCase):
         self.assertIn("engines", files)
         self.assertIn("tests", files)
 
+    @needs_engine
     def test_requirements_untouched(self):
-        req = text(ROOT / "requirements.txt")
+        req = text(ENGINE / "requirements.txt")
         self.assertNotIn("pywebview", req, "pywebview 只进 neo/requirements-neo.txt，不动上游")
 
 

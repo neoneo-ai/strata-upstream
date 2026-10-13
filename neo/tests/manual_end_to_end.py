@@ -15,8 +15,13 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+if __package__ in (None, ""):                       # 直接跑 python neo/tests/manual_end_to_end.py 时没有父包
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    __package__ = "neo.tests"
+
+from ._bootstrap import ENGINE, REPO                # noqa: E402
+
+ROOT = ENGINE                                       # 这一份要的是引擎根目录：跑的是真的 serve/server.py
 
 from neo import connectors, netprobe                                          # noqa: E402
 

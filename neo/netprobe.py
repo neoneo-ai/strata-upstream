@@ -25,12 +25,15 @@ import socket
 import threading
 import time
 
-#: 要量的三个地址。hf-mirror.com 是 setup.py 里 HF_ENDPOINT 那面镜子（#495）：
+#: 要量的地址。hf-mirror.com 是 setup.py 里 HF_ENDPOINT 那面镜子（#495）：
 #: 国内够得着镜子、够不着源站的人不少，镜子连得上就说明"走镜子"这条路可用。
+#: github.com 是取引擎源码树的那一条（neo/engine_setup.py 只认 GitHub 的 tag，
+#: 镜像给的是仓库当前文件，不是钉住的 revision），它不参与"模型从哪个源下"的建议。
 TARGETS = (
     {"host": "huggingface.co", "port": 443, "what": "huggingface"},
     {"host": "hf-mirror.com", "port": 443, "what": "mirror"},
     {"host": "www.modelscope.cn", "port": 443, "what": "modelscope"},
+    {"host": "github.com", "port": 443, "what": "github"},
 )
 TIMEOUT_S = 3.0
 CACHE_S = 60.0                                  # 页面每 2 秒轮一次，别每次都去连

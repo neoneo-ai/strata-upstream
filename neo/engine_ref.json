@@ -1,0 +1,9 @@
+{
+ "url": "https://github.com/Niko1221/Strata",
+ "tag": "v0.1.43.1",
+ "sha": "a0116b2782a5b82622358c04a06496485d12b2d6",
+ "zip_sha256": "9e37f07e87473210ac98ee6041e6651c02e1c473bf75eae65191840fa2b80768",
+ "zip_bytes": 21786355,
+ "zip_entries": 3415,
+ "note": "Neo 要的那一份 Strata 引擎源码。取源码只认 GitHub 的 tag（镜像给的是仓库当前文件，不是钉住的 revision）。zip_sha256 是 Neo 这边算好钉进来的：GitHub 的 archive zip 是现打包的，没有官方摘要，Neo 下载后自己算 SHA-256 与这一项比，比对上了才解压。bump 流程见 docs/NEO_DESKTOP.md。"
+}

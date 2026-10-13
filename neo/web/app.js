@@ -453,34 +453,41 @@ function renderLan(lan) {
   else if (revealedKey && lan.api_key_masked !== revealedMask) setRevealedKey("", "");
 }
 
+// 一个 agent 一行：名字 + 那一行命令 + 复制。细节（服务地址、要设的变量、
+// 配置文件路径、整块粘贴内容）折在"细节"后面，默认不占地方。
+function agentDetails(r, data) {
+  const box = document.createElement("div");
+  box.className = "agent-more hidden";
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  meta.textContent = `服务 ${r.base} · 模型 ${r.model}` +
+    (r.context ? `（${r.context.toLocaleString()} 上下文）` : "") +
+    ` · 配置文件 ${r.config_path}` + (data.has_api_key ? "" : " · 服务没设 token");
+  const pre = document.createElement("pre");
+  pre.className = "cmd";
+  pre.textContent = (r.powershell || []).join("\n");
+  box.append(meta, pre);
+  return box;
+}
+
 function renderAgents(data) {
   const box = $("agents");
   box.innerHTML = "";
   (data.recipes || []).forEach((r) => {
     const card = document.createElement("div");
     card.className = "agent";
-    const head = document.createElement("div");
-    head.className = "agent-head";
-    const title = document.createElement("span");
-    title.className = "name";
-    title.textContent = r.title;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = `${r.base} · 模型 ${r.model}` +
-      (r.context ? `（${r.context.toLocaleString()} 上下文）` : "") +
-      (data.has_api_key ? "" : " · 服务没设 token");
-    head.append(title, meta);
-    const pre = document.createElement("pre");
-    pre.className = "cmd";
-    pre.textContent = (r.powershell || []).join("\n");
-    const row = document.createElement("div");
-    row.className = "row";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = r.title;
+    const code = document.createElement("code");
+    code.className = "quick";
+    code.textContent = r.quick || `python -m neo.start ${r.agent}`;
     const copy = document.createElement("button");
-    copy.textContent = "复制命令";
+    copy.textContent = "复制";
     copy.onclick = async () => {
-      const ok = await copyText((r.powershell || []).join("\n"));
+      const ok = await copyText(code.textContent);
       copy.textContent = ok ? "已复制" : "复制失败";
-      setTimeout(() => { copy.textContent = "复制命令"; }, 4000);
+      setTimeout(() => { copy.textContent = "复制"; }, 4000);
     };
     const write = document.createElement("button");
     write.textContent = "写进配置";
@@ -492,9 +499,17 @@ function renderAgents(data) {
       if (res.notes && res.notes.length) note(res.notes.join("；"));
       setTimeout(() => { write.textContent = "写进配置"; }, 6000);
     };
-    row.append(copy, write);
-    card.append(head, pre, row);
-    box.append(card);
+    const more = document.createElement("button");
+    more.textContent = "细节";
+    const details = agentDetails(r, data);
+    more.onclick = () => {
+      details.classList.toggle("hidden");
+      more.textContent = details.classList.contains("hidden") ? "细节" : "收起";
+    };
+    card.append(name, code, copy);
+    if (r.config_only) card.append(write);
+    card.append(more);
+    box.append(card, details);
   });
 }
 

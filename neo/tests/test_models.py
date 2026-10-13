@@ -108,11 +108,13 @@ class TestReadTables(TableCase):
 
 
 class TestRecommend(unittest.TestCase):
-    def test_32gb_takes_coder_because_it_is_the_only_one_that_fits(self):
+    def test_32gb_takes_iq2_xs_and_coder_is_only_listed_not_recommended(self):
         got = models.recommend(32)
-        self.assertEqual((got["family"], got["model"]), ("coder", "IQ1_M"))
-        self.assertIn("只有 Coder 装得下", got["why"])
-        self.assertEqual(got["also"][0]["model"], "IQ2_XS")
+        self.assertEqual((got["family"], got["model"]), ("qwen", "IQ2_XS"))
+        self.assertIn("低内存模式", got["why"])
+        self.assertEqual(got["also"][0]["model"], "Q2_0")
+        coder = [a for a in got["also"] if a["family"] == "coder"][0]
+        self.assertIn("中文", coder["note"], "Coder 要说清中文不行，且它只是\"也可以\"里的一项")
 
     def test_48gb_takes_iq2_xs_and_names_q2_0_as_the_fast_one(self):
         got = models.recommend(48)
@@ -130,11 +132,12 @@ class TestRecommend(unittest.TestCase):
         self.assertEqual((got["family"], got["model"]), ("qwen", "IQ3_S"))
         self.assertEqual(got["also"][0]["family"], "unsloth")
 
-    def test_every_tier_says_why_and_keeps_the_coder_note(self):
+    def test_every_tier_says_why_and_warns_about_the_coder(self):
         for ram in (16, 32, 48, 64, 96, 128, 256):
             got = models.recommend(ram)
             self.assertTrue(got["why"], f"{ram} GB 没有理由")
-            self.assertIn("Coder", got["note"])
+            self.assertIn("不要选 Coder", got["note"])
+            self.assertNotEqual(got["family"], "coder", f"{ram} GB 不推荐 Coder")
 
     def test_ram_read_failure_is_said_not_pretended_to_be_zero(self):
         got = models.recommend(0)
@@ -352,12 +355,18 @@ class TestRealSetup(unittest.TestCase):
         self.assertTrue(all(e["about"] for e in data["models"]))
 
     def test_recommendation_tiers_match_the_docs_table(self):
-        # docs/AI_SETUP.md 第 3 步：32 → Coder，48 → IQ2_XS，64 → IQ2_XS，96+ → IQ3_S
-        self.assertEqual(models.recommend(32)["model"], "IQ1_M")
+        # docs/AI_SETUP.md 第 3 步：32 → IQ2_XS（低内存模式），48 → IQ2_XS，
+        # 64 → IQ2_XS，96+ → IQ3_S。Coder 在 32 GB 那档只是"也可以"里的一项。
+        self.assertEqual(models.recommend(32)["model"], "IQ2_XS")
         self.assertEqual(models.recommend(48)["model"], "IQ2_XS")
         self.assertEqual(models.recommend(64)["model"], "IQ2_XS")
         self.assertEqual(models.recommend(96)["model"], "IQ3_S")
         self.assertEqual(models.recommend(192)["model"], "IQ3_S")
+        for ram in (16, 32, 48, 64, 96, 192):
+            self.assertNotEqual(models.recommend(ram)["family"], "coder",
+                                f"{ram} GB 不推荐 Coder（中文与 CJK 不行，#438）")
+        coder = [a for a in models.recommend(32)["also"] if a["family"] == "coder"]
+        self.assertEqual(len(coder), 1, "32 GB 那档要说得出 Coder 这个选项")
 
     def test_the_real_machine_line_is_readable(self):
         data = models.catalog(ROOT, installed=[])

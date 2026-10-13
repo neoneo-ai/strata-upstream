@@ -6,9 +6,10 @@
 是 None，跳过就行 —— Neo 只要 title / about / download_gb / ram_gb 这些字面量。
 
 推荐按 docs/AI_SETUP.md 第 3 步那张表和 docs/MODELS.md 的 "Pick by RAM"：
-32 GB → Coder（IQ1_M，唯一装得下的）；48 GB → IQ2_XS（Q2_0 最快）；
+32 GB → IQ2_XS（走低内存模式）；48 GB → IQ2_XS（Q2_0 最快）；
 64 GB → IQ2_XS（文档推荐）；96 GB 以上 → IQ3_S（Unsloth 的 UD-IQ4_XS 也可以）。
-写代码为主的话，任何内存下 Coder 都是好选择（docs/MODELS.md）。
+Coder（IQ1_M）在清单里可以装，Neo 不推荐它：它只留一半专家，中文与其它 CJK 的回答会
+出错或绕圈（docs/MODELS.md #438），这台机器的界面与用户主要用中文，更不该默认推它。
 
 装没装认两件事：根目录那个 strata-<tag+尺寸>.json 在不在（setup.py 给每个装好的模型
 写这个文件，命名是 tag = fam["tag"] + model），以及 neo/engines/strata.py 的 discover()
@@ -217,9 +218,11 @@ def machine_info(root, ram=None, gpu=None) -> dict:
 # 每一档：上限 GB、推荐的 (family, model)、为什么、"也可以"的 (family, model, 说明) 列表。
 # 分档与措辞来自 docs/AI_SETUP.md 第 3 步与 docs/MODELS.md 的 "Pick by RAM"。
 RAM_TIERS = (
-    (40.0, ("coder", "IQ1_M"),
-     "32 GB 内存：只有 Coder 装得下（专家数减半，写代码最好，代码以外弱一些）",
-     (("qwen", "IQ2_XS", "显存 24 GB 以上时 Q2_0 / IQ2_XS 走低内存模式也能跑，通用场景更好"),)),
+    (40.0, ("qwen", "IQ2_XS"),
+     "32 GB 内存：IQ2_XS 走低内存模式（显存 24 GB 以上最稳，专家从 SSD 读的那部分会慢一些）",
+     (("qwen", "Q2_0", "最快（5070 上 94 tok/s 对 79 tok/s），质量与 IQ2_XS 接近"),
+      ("coder", "IQ1_M", "只写代码、且主要用英文时可以装（32 GB 整包装得下的就是它）；"
+                         "中文回答会出错或绕圈，中文用户不要选（docs/MODELS.md #438）"))),
     (60.0, ("qwen", "IQ2_XS"),
      "48 GB 内存：IQ2_XS（要最快就 Q2_0）；更大的尺寸装不下",
      (("qwen", "Q2_0", "最快（5070 上 94 tok/s 对 79 tok/s），质量与 IQ2_XS 接近"),)),
@@ -230,7 +233,8 @@ RAM_TIERS = (
      "96 GB 以上：IQ3_S 质量最好（与完整模型持平），速度最慢",
      (("unsloth", "UD-IQ4_XS", "约 4-bit，94 GB 下载；内存不到 ~80 GB 时一部分专家从 SSD 读"),)),
 )
-CODE_NOTE = "主要写代码的话，任何内存下 Coder 都是好选择（docs/MODELS.md）"
+CJK_NOTE = "这台机器的用户主要用中文时不要选 Coder：它的中文与其它 CJK 回答会出错或绕圈" \
+           "（docs/MODELS.md #438）"
 UNKNOWN_RAM_NOTE = "读不到这台机器的内存，按 64 GB 那档推荐（IQ2_XS 是最稳的默认）"
 
 
@@ -238,7 +242,7 @@ def recommend(ram_gb: float) -> dict:
     """这台内存该装哪一个。分档与措辞来自 docs/AI_SETUP.md 第 3 步与 docs/MODELS.md。"""
     if ram_gb <= 0:
         return {"family": "qwen", "model": "IQ2_XS", "why": UNKNOWN_RAM_NOTE,
-                "also": [], "ram_gb": 0.0, "note": CODE_NOTE}
+                "also": [], "ram_gb": 0.0, "note": CJK_NOTE}
     for ceiling, (family, model), why, also in RAM_TIERS:
         if ram_gb < ceiling:
             return _tier(family, model, why, also, ram_gb)
@@ -248,7 +252,7 @@ def recommend(ram_gb: float) -> dict:
 def _tier(family, model, why, also, ram_gb) -> dict:
     return {"family": family, "model": model, "why": why,
             "also": [{"family": f, "model": m, "note": n} for f, m, n in also],
-            "ram_gb": round(ram_gb, 1), "note": CODE_NOTE}
+            "ram_gb": round(ram_gb, 1), "note": CJK_NOTE}
 
 
 def resident_budget_gib(arena_gb: float, ram_gb: float) -> int:

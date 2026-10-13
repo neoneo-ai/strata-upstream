@@ -561,13 +561,17 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console \
                    neo.tests.test_netprobe neo.tests.test_tokens neo.tests.test_connectors \
                    neo.tests.test_wizard neo.tests.test_connect_api \
-                   neo.tests.test_connect_cli neo.tests.test_manager_cli
+                   neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start
 ```
 
-305 个测试，149.4 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置；`test_netprobe` 17 个 / `test_models` 40 个 /
-`test_wizard` 26 个 / `test_ui` 43 个 / `test_tokens` 与 `test_connectors` 42 个 / `test_console` 19 个
-共 40 秒，其余（监督器、引擎、上游接口、日志、接入接口、两个 CLI）109 秒，全在起子进程与等真服务）：
+329 个测试，合起来跑 243.4 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的三个模块上，单独量的数：
+`test_supervisor` 56 秒、`test_console` 9.1 秒、`test_connect_api` 6.7 秒，其余十二个模块合起来 14 秒 ——
+日常开发跑那十二个就够（命令见 AGENTS.md，13.6 秒）。两处实测改掉的等法（2026-10-13）：
+`neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
+控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
+`poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
+`test_connect_api` 39.6→6.7 秒、`test_console` 34.7→9.1 秒、`test_supervisor` 70.3→56 秒：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、

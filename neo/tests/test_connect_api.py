@@ -192,6 +192,14 @@ class TestConnectApi(unittest.TestCase):
         self.assertFalse(data["has_api_key"])
         self.assertEqual(data["recipes"][0]["env"]["ANTHROPIC_AUTH_TOKEN"], "")
 
+    def test_connect_endpoint_gives_one_line_per_agent(self):
+        """「接入」页每一行复制的就是这一句：一个 agent 一条 start 命令。"""
+        _, data = self.get("/neo/connect")
+        for r in data["recipes"]:
+            self.assertIn(f"start {r['agent']}", r["quick"])
+            self.assertNotIn("key", r, "页面那份配方不带明文 key")
+            self.assertNotIn("key_masked", r)
+
     def test_connect_write_is_asked_by_name(self):
         code, data = self.post("/neo/connect", {"agent": "codex"})
         self.assertEqual(code, 200)

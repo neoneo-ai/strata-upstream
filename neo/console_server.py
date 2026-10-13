@@ -62,7 +62,15 @@ def neo_console_info(port: int, timeout: float = 0.8) -> dict | None:
     修好前的代码）与 19:34 起的 NeoStrata.exe 同时在听 127.0.0.1:8083，页面每 2 秒一次的
     轮询全落在旧的那个上 —— 窗口里是"未启动 / 文件不在 / 没有日志"，而真正在跑的服务
     在另一个进程里（45372 在听 8080，日志 10 KB 还在写）。
+
+    先摸一下 TCP 连接（0.05 秒）再决定要不要发那个 HTTP 请求：这台机器上（实测
+    2026-10-13，Windows 11）连一个没人听的本机端口不会立刻被拒，要一直等到超时，
+    直接 urlopen 就是每次 0.8 秒。没人听就回 None，有人听才给 HTTP 那 0.8 秒。
     """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.05)
+        if probe.connect_ex(("127.0.0.1", int(port))) != 0:
+            return None
     try:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/neo/status",
                                      headers={"User-Agent": "NeoStrata/0.1",
@@ -331,7 +339,10 @@ class ConsoleServer:
         httpd.shell = self.shell
         self.httpd = httpd
         self.port = httpd.server_address[1]
-        self.thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="neo-console")
+        # serve_forever 默认 0.5 秒醒一次，shutdown() 就要等那么久才回来（实测每次 0.51 秒）。
+        # 0.05 秒醒一次，起停都跟得上，页面那边没有任何变化。
+        self.thread = threading.Thread(target=lambda: httpd.serve_forever(poll_interval=0.05),
+                                       daemon=True, name="neo-console")
         self.thread.start()
         host = "127.0.0.1" if self.host in ("0.0.0.0", "", "::") else self.host
         return f"http://{host}:{self.port}/"
@@ -449,13 +460,21 @@ class ConsoleServer:
         return connectors.Model.from_config(cfg)
 
     def connect_recipes(self, agent: str = "") -> dict:
-        """四个 agent 的接入配方。key 用服务现在那把；没设 key 就回空串并说清楚。"""
-        from . import connectors, tokens
+        """四个 agent 的接入配方。key 用服务现在那把；没设 key 就回空串并说清楚。
+
+        每个配方带一句 quick：「接入」页每一行要复制的那一行命令
+        （根目录有 NeoStrata.exe 就是 `NeoStrata.exe start <agent>`，没有就
+        `python -m neo.start <agent>`）。页面默认只给这一行，env 与配置文件路径
+        折在"细节"里，key 在这里永远是遮罩过的（明文只走 /neo/token 的本机请求）。
+        """
+        from . import connectors, start, tokens
         base = tokens.base_for(self.supervisor.host, self.supervisor.port)
         key = str(self.supervisor.api_key or "")
         model = self._model_for_connect()
         names = [agent] if agent in connectors.AGENTS else list(connectors.AGENTS)
         recipes = [connectors.recipe(name, base, key, model) for name in names]
+        for item in recipes:
+            item["quick"] = start.quick_command(self.root_dir(), item["agent"])
         return {"base": base, "model": model.id, "context": model.context,
                 "has_api_key": bool(key), "lan": self.lan_info(), "recipes": recipes}
 

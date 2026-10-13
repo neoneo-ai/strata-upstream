@@ -35,8 +35,15 @@ user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
-neo.tests.test_connect_cli neo.tests.test_manager_cli` (312 tests, 288.6 s on Windows 11 /
-Python 3.13, using `serve/server.py --engine mock`; 149.4 s on the earlier 305-test run). Neo's own
+neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start` (329 tests, 243.4 s on Windows 11 /
+Python 3.13, using `serve/server.py --engine mock`; 288.6 s on the earlier 312-test run). The three modules that
+start real processes are the whole cost - measured on their own: `test_supervisor` 56 s, `test_console` 9.1 s,
+`test_connect_api` 6.7 s; the other twelve together are 14 s. For a quick pass while developing, run those twelve
+and leave the three out:
+`python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
+neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
+neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
+neo.tests.test_logging` (13.6 s). Neo's own
 packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
@@ -46,8 +53,11 @@ and prints LAN addresses (the page's 「复制 token」 puts the live key on the
 `POST /neo/token {"action":"reveal"}` returns the full key only to requests whose peer address is loopback and
 writes nothing, and the page shows the mask until asked), and `neo/connectors.py` merges Neo's block into Claude Code / Codex CLI / OpenCode /
 OpenClaw config files (backup to `.neo-bak`, merge never overwrite, unparseable file left untouched). Default stays
-`127.0.0.1` with no API key; every one of these is opt-in and writes nothing until the user asks. CLI:
-`python -m neo.wizard --check`, `python -m neo.connect list`.
+`127.0.0.1` with no API key; every one of these is opt-in and writes nothing until the user asks. The page shows one
+line per agent - `NeoStrata.exe start claude` (or `python -m neo.start claude` from the source tree, `neo/start.py`) -
+which resolves the base URL, key, model id and context window, clears the cloud-account env vars, and launches the
+agent; `--no-launch` prints the paste block instead, `NEO_SERVER_URL` + `NEO_API_KEY` point it at a remote Strata.
+CLI: `python -m neo.wizard --check`, `python -m neo.connect list`, `python -m neo.start list`.
 
 The server's key guards inference only: `serve/server.py`'s `_authorized(monitor=True)` lets the Monitor's
 read-only endpoints (`/metrics`, `/status`, `/slots`, `/props`, `/config`, `/settings`, `/mcp`, `/api/requests`,

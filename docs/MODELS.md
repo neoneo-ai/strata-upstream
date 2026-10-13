@@ -11,7 +11,7 @@ The installer recommends one for your PC; this page explains the choice. Back to
 
 | Your RAM | Take | Why |
 | --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB; best at code, weaker at everything else ([why](#coder)). With a 24 GB card, Q2_0 and IQ2_XS run too ([low-RAM mode](#a-big-graphics-card-and-little-ram)) and are the better pick for general use |
+| **32 GB** | **IQ2_XS** (low-RAM mode) | with a 24 GB card, Q2_0 and IQ2_XS run ([low-RAM mode](#a-big-graphics-card-and-little-ram)). The [Coder](#coder) fits 32 GB too and is best at code, but it is weak in Chinese and other CJK text - not the pick for a Chinese-speaking user |
 | **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
 | **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits (IQ3_S with little else open) |
 | **96 GB or more** | **IQ3_S**, or [Unsloth's UD-IQ4_XS](#unsloth-ud-iq4_xs) (~4-bit) | room for the largest sizes |

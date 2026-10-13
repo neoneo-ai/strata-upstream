@@ -90,11 +90,13 @@ def dead_pid() -> int:
 
 class SupervisorBase(unittest.TestCase):
     def make(self, **kw):
+        # 轮询间隔按"测试要跑得快"给：状态机每 0.05 秒看一次子进程、每 0.1 秒问一次
+        # /health，就绪与崩溃都是立刻能看见的事，等的时间由条件决定（见 wait）。
         kw.setdefault("backoff", (0.5, 0.8, 1.0))
         kw.setdefault("window_s", 600.0)
         kw.setdefault("max_restarts", 3)
-        kw.setdefault("poll_s", 0.25)
-        kw.setdefault("probe_s", 0.4)
+        kw.setdefault("poll_s", 0.05)
+        kw.setdefault("probe_s", 0.1)
         self.sup = Supervisor(MockEngine(ROOT), free_port(), **kw)
         return self.sup
 
@@ -103,7 +105,8 @@ class SupervisorBase(unittest.TestCase):
             self.sup.shutdown()
         except Exception:
             pass
-        time.sleep(0.4)
+        # shutdown() 自己等子进程退出；这里只留一点时间给 Windows 放掉进程句柄
+        time.sleep(0.1)
 
     def wait(self, pred, timeout=90.0, why=""):
         t0 = time.time()
@@ -111,7 +114,7 @@ class SupervisorBase(unittest.TestCase):
             s = self.sup.status()
             if pred(s):
                 return s
-            time.sleep(0.25)
+            time.sleep(0.05)
         self.fail(f"等不到 {why}；最后状态 {self.sup.status()}")
 
 
@@ -181,6 +184,12 @@ class TestSetModel(SupervisorBase):
 
 
 class TestCrashRestart(SupervisorBase):
+    def make(self, **kw):
+        # 退避表测的是"第 1/2/3 次各退一档"这个顺序，不是退多久：给短档，
+        # 三次重启少等 1.4 秒，断言一个字不改。
+        kw.setdefault("backoff", (0.2, 0.3, 0.4))
+        return super().make(**kw)
+
     def kill(self):
         s = self.sup.status()
         proc = self.sup._proc
@@ -218,7 +227,7 @@ class TestCrashRestart(SupervisorBase):
         self.assertGreater(len(s["restarts"]), s["max_restarts"], "超过上限才熔断")
         self.assertIsNone(sup._proc, "熔断后不该再有子进程")
         self.assertTrue(s["diagnosis"], "熔断要给一句诊断")
-        time.sleep(2.0)
+        time.sleep(1.0)
         self.assertEqual(sup.status()["state"], HALTED, "熔断后保持停着，等人工处理")
 
     def test_stop_never_autorestarts(self):
@@ -230,8 +239,9 @@ class TestCrashRestart(SupervisorBase):
         self.assertEqual(s["state"], IDLE)
         self.assertEqual(s["intent"], "stop")
         self.assertIsNone(sup._proc)
-        time.sleep(2.5)
-        self.assertEqual(sup.status()["state"], IDLE, "停止后 2.5 秒内不能被自动拉起")
+        # 1.2 秒比退避表里最长的那一档（0.4 秒）长好几倍：这段时间里要是会被自动拉起，就一定看得见
+        time.sleep(1.2)
+        self.assertEqual(sup.status()["state"], IDLE, "停止后不能被自动拉起")
         self.assertEqual(sup.status()["restarts"], [], "用户停止不计入重启次数")
 
 
@@ -288,9 +298,9 @@ class TestServiceOwnership(SupervisorBase):
         import subprocess
         exe = getattr(sys, "_base_executable", None) or sys.executable
         code = ("import subprocess, sys, time\n"
-                f"g = subprocess.Popen([{exe!r}, '-c', 'import time;time.sleep(20)'])\n"
-                "print(g.pid, flush=True)\n"      # 不 flush 的话 readline 要等它 18 秒后退出才返回
-                "time.sleep(18)\n")
+                f"g = subprocess.Popen([{exe!r}, '-c', 'import time;time.sleep(12)'])\n"
+                "print(g.pid, flush=True)\n"      # 不 flush 的话 readline 要等它退出才返回
+                "time.sleep(6)\n")                # 断言要在父链还在的时候做完
         proc = subprocess.Popen([exe, "-c", code], stdout=subprocess.PIPE, text=True)
         self.addCleanup(proc.kill)
         line = proc.stdout.readline().strip()
@@ -312,9 +322,9 @@ class TestExternalService(unittest.TestCase):
     """
 
     def make(self, adapter, port, **kw):
-        kw.setdefault("poll_s", 0.2)
-        kw.setdefault("probe_s", 0.3)
-        kw.setdefault("watch_s", 0.3)
+        kw.setdefault("poll_s", 0.05)
+        kw.setdefault("probe_s", 0.1)
+        kw.setdefault("watch_s", 0.15)
         self.sup = Supervisor(adapter, port, **kw)
         return self.sup
 
@@ -324,7 +334,7 @@ class TestExternalService(unittest.TestCase):
             s = sup.status()
             if pred(s):
                 return s
-            time.sleep(0.25)
+            time.sleep(0.05)
         self.fail(f"等不到 {why}；最后状态 {sup.status()}")
 
     def start_server(self, port):
@@ -398,13 +408,13 @@ class TestExternalService(unittest.TestCase):
             {"info": sup._monitor()}), daemon=True, name="neo-monitor-test")
         th.start()
         self.addCleanup(lambda: (setattr(sup, "intent", "stop"), sup._wake.set()))
-        time.sleep(1.5)
+        time.sleep(0.6)                     # watch_s 0.15 的 4 轮：足够看出"没有判成不见了"
         self.assertIsNone(out["info"], "端口在听的时候不能判成不见了")
         sup.port = free_port()                      # 端口上的服务真没了
         sup.adapter.live = False
         t0 = time.time()
         while out["info"] is None and time.time() - t0 < 5.0:
-            time.sleep(0.1)
+            time.sleep(0.05)
         th.join(5.0)
         self.assertIsNotNone(out["info"], "端口不听了要判成不见了")
         self.assertIn("接手的服务不见了", out["info"]["reason"])

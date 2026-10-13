@@ -172,9 +172,11 @@
     <div class="panel">
       <h3>编码 agent 一键接入</h3>
       <div id="agents" class="agents"></div>
-      <p class="muted">命令里已经带上服务地址、token 与模型 id。Claude Code 只靠环境变量；
-         Codex / OpenCode / OpenClaw 认配置文件，点「写进配置」会先把它现有的配置备份成
-         .neo-bak 再合并（解析不了的文件 Neo 不动）。Neo 不替你启动 agent。</p>
+      <p class="muted">每一行就一条命令：复制到终端跑，Neo 把服务地址、token、模型与上下文
+         都算好，直接把 agent 带上下拉起来（加 --no-launch 只打印命令）。Codex / OpenCode /
+         OpenClaw 认配置文件，点「写进配置」会先把它现有的配置备份成 .neo-bak 再合并
+         （解析不了的文件 Neo 不动）。连远程那台 Strata：设 NEO_SERVER_URL 与 NEO_API_KEY
+         两个环境变量再跑同一条命令。</p>
     </div>
 
     <div class="panel">

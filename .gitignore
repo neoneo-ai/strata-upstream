@@ -54,6 +54,14 @@ build-vision-cuda12.bat
 *.done
 /third_party/*.zip
 
+# Neo (docs/NEO_DESKTOP.md): the built windowed exe is a build product, not source.
+# Build it with `python -m neo.build_exe`; NEO-START.bat and neo/ are the source.
+/NeoStrata.exe
+/NeoStrata.exe.new
+# The engine source tree Neo's wizard clones into this app repo (neo/engine_setup.py).
+# Not to be confused with /engine/ above, which is setup.py's ready-made engine folder.
+/strata/
+
 # IDEs
 .vscode/
 .idea/

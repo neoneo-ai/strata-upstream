@@ -683,12 +683,29 @@ exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --eng
 `unset` 后 `launcher.json` 里是空串而 key 缓存里还有 1 条；页面 `/`、`/app.js`、`/style.css`
 里 `lan-copy-key`、`lan-key-value`、`{"action":"reveal"}`、`.keyval` 都在。
 
+token 管到哪这条在 exe 里也验过（2026-10-13，Windows 11，`NeoStrata.exe --engine mock
+--port 28190 --console-port 28193`；exe 13.3 MB，`instance.json` 里 `mode="window"`，
+窗口真起来了）：`POST /neo/token` 出 `sk-neo-cb2cc50c…`（39 字符）→ `POST /neo/stop` →
+`POST /neo/start`，服务日志里的命令行变成 `... serve/server.py --engine mock ... --port 28190
+--api-key sk-neo-cb2cc50c606104ccabdaec5a7da32588`。此后本机 `GET /metrics` 无 key 回 **200**，
+`live`/`totals`/`hardware`/`hardware_static`/`requests` 五节齐（就是监控页那几张卡片要的），
+`/status`、`/slots` 无 key 200，`Host: evil.example.com` **401**，`POST /v1/chat/completions`
+无 key **401** / 带 key **200**，`GET /v1/models` 无 key **401**，`POST /settings` 无 key **401**，
+`/health` 报 `api_key=true`；`{"action":"unset"}` 之后 `/neo/lan` 的 `api_key` 为空。
+`/api/requests` 在这台机器上是 404 —— 这条路由要 `svc.api_monitor` 开着才存在，与鉴权无关。
+
+强杀 exe（`Stop-Process -Force`）不走 `atexit`：`neo/state/instance.json` 会留下，监督进程与
+服务进程也各自还活着（实测留下 pid 16536 听 28193、pid 42336 听 28190），要连着收端口与
+`instance.json`；正常关窗口时这三样自己就清了。
+
 
 ## 已知边界
 
 - 端口改了要重启 Neo 才生效（M1 不做热切换）。
-- 聊天页与监控页是内嵌上游页面：服务需要 API key 时，iframe 里会要 key（「接入」页的"生成 token"
-  就是给这件事用的，key 只在生成那一次完整显示，之后界面上只有掩码）。
+- 聊天页与监控页是内嵌上游页面。**监控页在本机不要 key**：`GET /metrics` 那批只读端点对本机对端
+  放行（见上节「token 管到哪」），设了 token 之后窗口里的卡片照旧出数。聊天页要 key ——「接入」页的
+  "生成 token"就是给这件事用的，key 只在生成那一次完整显示，之后界面上只有掩码（「复制 token」一键
+  拿当前这把）。
 - 局域网开放、token 生成、四个 agent 的接线在「接入」页（见上节）；**默认仍只绑 `127.0.0.1`、不带 key**。
 - 防火墙那条命令**只给不执行**，要用户用管理员权限自己跑；不跑它，局域网里的别的机器连不上。
 - 接线配方写的是 agent 的配置文件，Neo **不看 agent 装没装**：agent 不在时配置文件照样写对，

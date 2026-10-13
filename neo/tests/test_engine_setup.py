@@ -281,7 +281,11 @@ class TestPlan(StateDirBase):
 
     def test_plan_default_dest_is_the_app_strata(self):
         p = engine_setup.plan(ref=make_ref(), git_ok=True)
-        self.assertEqual(Path(p["dest"]), REPO / "strata")
+        # 两种形状走的是同一条规则（paths.strata_root）：Neo 自己的仓库里没有 setup.py，
+        # 落点是 <仓库>/strata；跑在完整 Strata 检出里时解析出来的根就是那棵检出本身，
+        # 落点就是它 —— 那里再放一个 strata/ 就是把同一份源码复制两遍。
+        expected = REPO if paths.is_strata_root(REPO) else REPO / "strata"
+        self.assertEqual(Path(p["dest"]), expected)
 
 
 class TestExternalRoot(StateDirBase):
@@ -375,7 +379,9 @@ class TestExternalRoot(StateDirBase):
         engine_setup.set_engine_root(str(self.tmp))
         self.assertEqual(engine_setup.default_dest(), paths.safe_resolve(self.tmp))
         engine_setup.clear_engine_root()
-        self.assertEqual(engine_setup.default_dest(), REPO / paths.ENGINE_DIR_NAME)
+        # 清掉外置目录后回到默认：Neo 自己的仓库里是 <仓库>/strata，完整 Strata 检出里是那棵检出本身
+        expected = REPO if paths.is_strata_root(REPO) else REPO / paths.ENGINE_DIR_NAME
+        self.assertEqual(engine_setup.default_dest(), expected)
 
     def test_status_carries_the_root_and_why(self):
         data = engine_setup.status(dest=self.tmp / "strata", ref=make_ref())

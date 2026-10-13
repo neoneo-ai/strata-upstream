@@ -91,7 +91,7 @@ class TestConsole(unittest.TestCase):
     def setUp(self):
         self.was = state.LAUNCHER.exists()
         self.backup = state.LAUNCHER.read_bytes() if self.was else b""
-        self.sup = Supervisor(FakeAdapter(ROOT), 8080)
+        self.sup = Supervisor(FakeAdapter(ENGINE), 8080)   # 适配器拿的是引擎根目录（与 manager 给的同一个）
         self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
         self.shell = RecordingShell()
         self.console.shell = self.shell
@@ -217,7 +217,7 @@ class TestPortConflict(unittest.TestCase):
 
     def console(self, port):
         """一个控制台，约定端口就是 port（strata_port 让它依次试 port..port+5）。"""
-        c = ConsoleServer(Supervisor(FakeAdapter(ROOT), 8080), host="127.0.0.1",
+        c = ConsoleServer(Supervisor(FakeAdapter(ENGINE), 8080), host="127.0.0.1",
                           port=port, strata_port=port - 3)
         self.started.append(c)
         return c
@@ -503,7 +503,7 @@ class TestStrataChannel(unittest.TestCase):
         cls.thread.start()
         # 控制台整类共用一个（实测 2026-10-13 每条用例各起一个时 9 条要 10.2 秒，
         # 每条付一次"起服务 + 等就绪"）；要"上游没在跑"的那条用例自己起一个。
-        cls.sup = Supervisor(FakeAdapter(ROOT), cls.up, api_key=FakeStrataHandler.key)
+        cls.sup = Supervisor(FakeAdapter(ENGINE), cls.up, api_key=FakeStrataHandler.key)
         cls.console = ConsoleServer(cls.sup, host="127.0.0.1", port=free_port())
         cls.url = cls.console.start()
         cls.sup.console_port = cls.console.port
@@ -567,7 +567,7 @@ class TestStrataChannel(unittest.TestCase):
 
     def test_upstream_down_is_502(self):
         """上游没在跑：转发回 502，控制台不能因为转发挂住。"""
-        dead = Supervisor(FakeAdapter(ROOT), free_port())
+        dead = Supervisor(FakeAdapter(ENGINE), free_port())
         other = ConsoleServer(dead, host="127.0.0.1", port=free_port())
         url = other.start()
         try:
@@ -611,7 +611,7 @@ class TestEngineEndpoint(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.sup = Supervisor(FakeAdapter(ROOT), 8080)
+        cls.sup = Supervisor(FakeAdapter(ENGINE), 8080)
         cls.console = ConsoleServer(cls.sup, host="127.0.0.1", port=free_port())
         cls.url = cls.console.start()
 

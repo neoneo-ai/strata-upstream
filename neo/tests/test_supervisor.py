@@ -39,6 +39,9 @@ class FastEngine(MockEngine):
     """
     name = "mock"                       # 状态页与断言里的引擎名不变
     entry = "neo/tests/mock_server.py"
+    #: 这个适配器跑的是 Neo 自己的文件（neo/tests/mock_server.py），所以它的根是 Neo 仓库的根；
+    #: 真的 MockEngine 跑的是上游的 serve/server.py，根是引擎根目录（见 SupervisorBase.make）。
+    neo_root = True
 
     def plan(self, port: int, host: str = "127.0.0.1", api_key: str = "",
              model_id: str = "", gpu=None):
@@ -133,7 +136,9 @@ class SupervisorBase(unittest.TestCase):
         kw.setdefault("max_restarts", 3)
         kw.setdefault("poll_s", 0.05)
         kw.setdefault("probe_s", 0.1)
-        self.sup = Supervisor((engine or self.engine_cls)(ROOT), free_port(), **kw)
+        self.sup = Supervisor((engine or self.engine_cls)(
+            ROOT if getattr(engine or self.engine_cls, "neo_root", False) else ENGINE),
+            free_port(), **kw)
         return self.sup
 
     def tearDown(self):

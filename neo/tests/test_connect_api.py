@@ -78,7 +78,7 @@ class TestConnectApi(unittest.TestCase):
             return {"path": str(Path(self._tmp.name) / f"{agent}.json"),
                     "written": True, "notes": ["测试里没真写文件"], "files": []}
         connectors.write_config = fake_write
-        self.sup = Supervisor(FakeAdapter(ROOT), 8080)
+        self.sup = Supervisor(FakeAdapter(ENGINE), 8080)   # 控制台读根目录走的就是适配器的 root
         self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
         self.url = self.console.start()
 

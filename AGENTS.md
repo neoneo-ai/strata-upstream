@@ -34,27 +34,52 @@ would silently lose its window and open only a browser page), and it refuses whe
 `neo/webcheck.py` reports a page script that would not run in the browser (two `<script>` tags share one global
 scope, so a top-level name declared in both files means the later file never executes - the window opens and every
 click is dead); the exe is meant to sit in a
-Strata root directory and uses that directory as its root. Its tests need no GPU, no network and never touch a real
+Strata root directory and uses that directory as its root. The root is resolved by one rule
+(`neo/paths.py::strata_root()`: `--root` > `NEO_STRATA_ROOT` > the app dir when it holds `setup.py` and
+`serve/server.py` > `<app>/strata` > the app dir with a stated reason), and `neo/tests/_bootstrap.py` exposes
+the same value as `ENGINE` - a green suite means it ran against the tree Neo itself would use. The engine
+source is pinned in `neo/engine_ref.json` (`url` / `tag` / `sha` / `zip_sha256`; today `v0.1.43.1` =
+`a0116b2782a5b82622358c04a06496485d12b2d6`): `neo/engine_setup.py` clones that tag shallowly into the
+gitignored `strata/`, or unpacks `archive/refs/tags/<tag>.zip` only after recomputing its SHA-256 and matching
+the pin. Source comes from GitHub tags only - mirrors serve a repository's current files, not the pinned
+revision (upstream's own reason in `setup.py`'s `model_source()`, `#908`). Never name the source tree
+`engine/`: upstream's `engine/` is the engine *binary* folder. Once the tree is in place Neo installs nothing
+itself - venv, dependencies, engine binaries and models all go through upstream `setup.py` (`neo/wizard.py`).
+Deploying into a Strata checkout goes through `python -m neo.deploy --to <tree>` (dry-run by default; gates:
+engine HEAD equals the pin with tracked files clean - Neo's own files there are untracked by design, so the
+dirty check passes `--untracked-files=no`; only Neo's listed paths are written; a running `NeoStrata.exe`
+blocks the write), then `webcheck` and the quick suite run in the target tree. Its tests need no GPU, no network and never touch a real
 user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
-neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings`
-(406 tests, 342.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
-329-test run). The modules that start real processes are the whole cost - measured on their own: `test_supervisor`
+neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings
+neo.tests.test_paths neo.tests.test_engine_setup neo.tests.test_deploy`
+(484 tests, 1054.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; the same 19 modules
+were 406 tests / 342.5 s before the split, and 243.4 s on the earlier 329-test run). The modules that start real
+processes are the whole cost - measured on their own: `test_supervisor`
 56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
-the other thirteen together are 15.6 s. For a quick pass while developing, run those thirteen and leave the three out:
+the other thirteen together are 15.6 s. The three newest modules add 91 tests and 12.6 s together
+(`test_engine_setup` + `test_netprobe` + `test_paths` + `test_deploy`, measured 2026-10-13; they need git for
+the clone and dirty-tree cases and skip with a reason without it). For a quick pass while developing, run the
+sixteen modules that start no processes and leave the three out:
 `python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
-neo.tests.test_logging neo.tests.test_model_settings` (15.6 s, 326 tests). `python -m neo.webcheck` checks the page
+neo.tests.test_logging neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup
+neo.tests.test_deploy` (28.4 s, 400 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
+thirteen-module run). `test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one
+commit per case), which is why the full 19-module run is 17.6 minutes while those two alone measure 8.4 s and
+5.0 s - run the quick pass while developing, the full pass before a deploy. `python -m neo.webcheck` checks the page
 scripts (the two `<script>` files as one program) in about a second, and `build_exe` runs it before packaging.
 Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 The deployed tree (`D:\Work\Strata`) is an upstream Strata checkout, not the dev repo: never commit there and never
 add a second remote to its `origin`, so upstream updates stay a plain `git pull` (measured 2026-10-13: 33 commits
 behind, 0 ahead, no modified tracked files). Neo's files there are untracked - `NeoStrata.exe`, `neo/`,
-`NEO-START.bat`. Deploying means replacing the exe **and** syncing `neo/` source **and** `neo/web/`: a `.py`-only
+`NEO-START.bat`. Deploy with `python -m neo.deploy --to D:\Work\Strata` (dry-run first, `--apply` to write): it
+refuses when the tree's HEAD is not the pinned tag, when tracked files are modified, when a `NeoStrata.exe` from
+that tree is running, and writes only Neo's listed paths - a `.py`-only
 sync once left the deployed source-tree page on the dead `t` / `applyLang` build, and `python -m neo.webcheck` run in
 that tree reported it. Build artifacts (`neo/build/`, `neo/dist/`) do not go into the deployed tree.
 
@@ -68,7 +93,7 @@ exemption patch was reverted 2026-10-13 - and `neo/tests/test_upstream_api.py` a
 while the monitor page and those read endpoints stay present.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
-`huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source,
+`huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` / `github.com` over TCP 443 and only suggests a source,
 `neo/wizard.py` runs `setup.py --yes --no-start` in the background, `neo/tokens.py` mints `sk-neo-<32 hex>` keys
 and prints LAN addresses (the page's 「复制 token」 puts the live key on the clipboard in one click:
 `POST /neo/token {"action":"reveal"}` returns the full key only to requests whose peer address is loopback and

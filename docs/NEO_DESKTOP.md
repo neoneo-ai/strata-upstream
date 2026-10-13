@@ -67,21 +67,24 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/supervisor.py` | 进程监督：启动、探活、退避重启、熔断、诊断、事件时间线 |
 | `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口；页面里所有动作的落点，含 `POST /neo/open` / `/neo/open-log` |
 | `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志、`instance.json`），原子写 + `.bak`；exe 里状态落点见 `pick_state_dir()` |
-| `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点 |
+| `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点；`strata_root()` 一条规则认引擎根目录（见"根目录怎么认"）、`app_root()` / `engine_checkout()` |
 | `neo/console_io.py` | 控制台输出闸门：单行 400 字符、每秒 30 行、5 秒内同样的行折叠、控制字符清掉；只包 `isatty()` 为真的流，一次 `write()` 里 2–60 行算一整块放行（`BURST_LINES` 行/秒）；`quiet_gui_logging()` 压 pywebview/pythonnet 的内部日志；真流写不动时丢掉而不排队；`NullStream` 接窗口版里 `sys.stdout` 是 `None` 的情况 |
 | `neo/ui_watchdog.py` | 窗口线程看门狗：`evaluate_js` 探窗口线程，3 秒没回音就把各线程当前所在帧写进日志 |
 | `neo/jobobj.py` | Windows Job Object：Neo 结束时子进程（含引擎、视觉编码器）跟着结束 |
 | `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
-| `neo/netprobe.py` | 下载源探测：TCP 443 连 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` 并计时，结果缓存；只给建议，不改上游的源选择 |
+| `neo/netprobe.py` | 下载源探测：TCP 443 连 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` / `github.com` 并计时，结果缓存；前三样给"模型从哪个源下"的建议，`github.com` 只给引擎源码树用（不改上游的源选择） |
 | `neo/tokens.py` | key 与绑法：`sk-neo-<32 hex>`、掩码、按 base 缓存的 key、本机局域网地址、防火墙提示命令（只给不执行） |
 | `neo/wizard.py` | 安装向导：四步现状 + 拼 `setup.py --yes --no-start [--family X --model Y]` 命令 + 后台跑并写 `logs/wizard.log`，`run_state()` 说现在有没有在跑 |
+| `neo/engine_setup.py` | 引擎源码树向导：按 `engine_ref.json` 的 pin `git clone --depth 1` 或解压摘要对上的 zip 到 `strata/`，`plan()` 回七个状态之一，之后交给 `setup.py`；命令行 `python -m neo.engine_setup --check \| --ensure [--zip 文件] [--json]` |
+| `neo/engine_ref.json` | 钉住的那一份引擎：`url` / `tag` / `sha` / `zip_sha256`（+ 字节数与一句话说明）。bump 就是改这一份 |
+| `neo/deploy.py` | 换版脚本：把开发树的 `neo/` + `NEO-START.bat` + `NeoStrata.exe` 写进部署树，先过引擎 / 路径 / 进程三道闸门，写完核对 SHA-256 并就地跑 `webcheck` 与快套件；默认 dry-run，`--apply` 才写 |
 | `neo/models.py` | 安装清单：ast 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表（不 import、不跑它）+ 这台机器（内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装（fits / tight / no）；命令行 `python -m neo.models --root . [--json]` |
 | `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
 | `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 406 个测试（见下） |
+| `neo/tests/` | 484 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty，`test_deploy.py` 守换版闸门 |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -149,6 +152,16 @@ POST /neo/install            {"family":"qwen","model":"IQ3_S","source":"modelsco
 POST /neo/source             {"source":"probe|huggingface|modelscope|mirror"} 记住下载源，
                              存 neo/state/source.json，回同一份清单；认不得的源回一条说明，
                              什么都不写、不起子进程
+GET  /neo/engine             引擎源码树的现状（接入页的「引擎源码树」卡片读这一条）：pin 的
+                             tag / sha / archive 地址、这台机器有没有 git、`github.com` 通不通
+                             （吃探测缓存，不联网）、`strata/` 在哪、HEAD 与 pin 对不对、
+                             `plan()` 的七个状态与下一步的动作、将要执行的那条 clone 命令、
+                             三步的现状、`engine.log` 的尾部、有没有一个在跑
+POST /neo/engine             {"action":"install","zip":"D:/x.zip"}：按 pin 取源码，后台线程跑
+                             （`wait=False`，一次 clone 要几十分钟，不能把请求线程堵住），
+                             取完交给 `setup.py`（`setup=True`，Neo 不自己装 venv / 依赖 / 引擎 /
+                             模型），host 与 key 从监督器传下去；输出进 neo/state/logs/engine.log；
+                             认不得的 action 回一条说明，什么都不跑；脏树 / 普通目录在动手前拒绝
 GET  /i18n.js                中英切换与明暗主题的脚本（与 /app.js 一样 no-store）
 GET  /neo/upstream?what=…    上游面板的三块（models / status / metrics），由 Neo 代读：浏览器
                              在 8083 的页面上直连 8080 会被 CORS 挡住，API key 也不出 Neo
@@ -304,6 +317,72 @@ python -m neo.connect claude --port 8080 --key sk-neo-... --model qwen3.8-flash-
 python -m neo.connect codex --persist --lan
 python -m neo.wizard --check
 ```
+
+## 引擎源码树：按 pin 装（`neo/engine_setup.py`、`neo/engine_ref.json`）
+
+Neo 与 Strata 分家之后，引擎源码不在 Neo 的仓库里，Neo 按一个**钉住的 tag** 取它。
+`neo/engine_ref.json` 是一份 JSON，四样东西：仓库地址、tag、commit SHA、archive zip 的
+SHA-256。今天钉的是 `v0.1.43.1` = `a0116b2782a5b82622358c04a06496485d12b2d6`
+（部署树 `D:\Work\Strata` 的 HEAD 就是它）。
+
+**取源码只认 GitHub 的 tag。** ModelScope 那类镜像给的是一个仓库的当前文件，不是钉住的
+revision —— 上游 `setup.py` 的 `model_source()` 里那句 `#908` 写的就是这件事。镜像只用于
+下模型（见"下载源探测"），不用于取源码。
+
+两条路：
+
+```
+git clone --branch v0.1.43.1 --depth 1 --single-branch <url> strata/
+<url>/archive/refs/tags/v0.1.43.1.zip          （这台机器没有 git 时的退路）
+```
+
+浅克隆出来是 detached HEAD，正合用：pin 是一个 commit SHA，不是一条分支。
+zip 是 GitHub 现打包的，**没有官方摘要**，所以 `zip_sha256` 是 Neo 这边算好钉进 pin 的：
+2026-10-13 下载 `v0.1.43.1` 的 archive zip，21,786,355 字节、3415 个条目，本地算出
+SHA-256 `9e37f07e87473210ac98ee6041e6651c02e1c473bf75eae65191840fa2b80768`，这一串写进
+`engine_ref.json`；解压前 Neo 自己再算一遍，对不上就一个文件都不解。
+
+**目录叫 `strata/`，不叫 `engine/`。** 上游 `setup.py` 的 `engine_dir()` 里 `engine/` 是
+**引擎二进制**的目录（根 `.gitignore` 里 `/engine/` 就是它），源码树不能占这个名字。
+`strata/` 在根 `.gitignore` 里：它是 clone 出来的，不进 Neo 的仓库。
+
+`plan()` 是纯函数（不联网、不写文件），状态七个：`ready`（HEAD == pin 且 git 干净）、
+`clone`、`zip_copy`、`need_zip`、`checkout_pin`（HEAD 不是 pin）、
+`dirty`（有人改过 → 拒绝，Neo 不动用户的改动）、`not_a_git_tree`。zip 解出来没有 `.git`，
+HEAD 查不了，所以 Neo 在 `neo/state/engine.json` 里记一笔来历（装的时候摘要对上了 pin
+才写得进去），`ready` 认这一笔。
+
+拿到源码之后 Neo 什么都不装：venv、依赖、引擎二进制、模型全交给上游 `setup.py`
+（`neo/wizard.py` 那条 `--yes --no-start`）。页面上是「接入」页的「引擎源码树」卡片
+（`GET /neo/engine`、`POST /neo/engine {"action":"install"}`），命令行是：
+
+```
+python -m neo.engine_setup --check
+python -m neo.engine_setup --ensure --no-setup
+python -m neo.engine_setup --ensure --zip D:\Downloads\Strata-0.1.43.1.zip
+```
+
+`netprobe.py` 因此多量一个 `github.com`（443，与模型源一样只测连不连得上）。它不参与
+"模型从哪个源下"的建议 —— 那条建议只看 huggingface / hf-mirror / modelscope。
+
+### 根目录怎么认（`neo/paths.py` 的 `strata_root()`）
+
+一条规则，程序与测试共用（`neo/tests/_bootstrap.py` 里的 `ENGINE` 就是它算出来的）：
+
+```
+--root  >  NEO_STRATA_ROOT  >  应用目录本身  >  <应用目录>/strata  >  应用目录（理由里写"这里还没有引擎"）
+```
+
+第 3、4 条要目录里 `setup.py` 与 `serve/server.py` 都在才认；前两条是用户点名，照用不检查
+（起不来由启动那一步明说，Neo 不偷偷换目录）。exe 放进 Strata 根目录时（今天所有用户的
+装法）第 3 条先命中，解析结果与改动前逐字节一致。
+
+### bump：换一版引擎要动什么
+
+1. 上游发新 tag → 改 `neo/engine_ref.json` 的 `tag` 与 `sha`；
+2. 下载 `archive/refs/tags/<tag>.zip`，本地算 SHA-256 填进 `zip_sha256`（顺手记下字节数）；
+3. 部署树 `git checkout <tag>`（或 `git pull --ff-only`），再 `python -m neo.deploy --to <部署树>`；
+4. 全量测试重跑一遍，这一节与"测试"一节的数字按实测更新。
 
 ## 模型设置页与语言/主题（`neo/model_settings.py`、`neo/gguf_meta.py`、`neo/web/i18n.js`）
 
@@ -684,14 +763,52 @@ python -m neo.build_exe --dest D:\Work\Strata
   2026-10-13 撤掉了先前打在 `serve/server.py` 上的本机豁免补丁（旧文件备份在
   `neo/state/backups/server.py.v0.1.43.neo-patched.bak`，393,602 字节），上游文件恢复原样
   （391,688 字节）。撤补丁留下的缺口由 Neo 自己补：监控页改走 `/strata/` 只读通道（见"token 管到哪"）。
-- 判据：`git -C D:\Work\Strata status --short` 里**没有已修改的跟踪文件**；
+- 判据：`git -C D:\Work\Strata status --short --untracked-files=no` 里**没有已修改的跟踪文件**
+  （Neo 的文件按设计就是 untracked，不能算成"脏"，`neo/engine_setup.py` 的
+  `git_dirty(..., tracked_only=True)` 就是为这一条加的）；
   `git rev-list --count HEAD..origin/main` 与 `origin/main..HEAD` 是 **33 与 0** —— 拉取是纯快进。
+- **换版用 `python -m neo.deploy --to D:\Work\Strata`**（默认 dry-run，加 `--apply` 才写）。
+  三道闸门，过不了什么都不写：① 引擎 —— 部署树的 HEAD 要等于 `neo/engine_ref.json` 的 pin
+  且跟踪文件干净；② 路径 —— 只写 Neo 清单里的东西（`neo/**`、`NEO-START.bat`、`NeoStrata.exe`），
+  `neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；③ 进程 —— 部署树里的 `NeoStrata.exe`
+  在跑就拒绝（文件被锁着，写了也是半个）。写完逐文件核对 SHA-256，再就地跑
+  `python -m neo.webcheck` 与快套件。2026-10-13 第一次真跑（dry-run，`--no-tests`）：
+  引擎闸门 OK（HEAD `a0116b2782a5` == pin），进程闸门被 `instance.json` 记的 pid 7276 挡住，
+  清单是 new 7、same 26、update 30，并当场报出部署树里多出来的一个 `neo/test_ui.py`
+  （旧同步留下的，`--prune` 会删）—— 只同步 `.py` 漏掉 `neo/web/` 那一类坑就是这么露出来的。
 - **部署 = 换 `NeoStrata.exe` + 同步 `neo/` 的源码与页面**。exe 里打的是开发树的 `neo/`；
   在部署树里跑源码（`python -m neo.manager`、`python -m neo.models`、跑测试）用的是部署树的 `neo/`，
   两边都要跟上。2026-10-13 实测踩过这个坑：只同步 `.py`、没同步 `neo/web/`，部署树的源码版页面
   就还是 `t` / `applyLang` 撞名那个死界面 —— `python -m neo.webcheck` 在部署树当场报出来。
   同步后部署树 `python -m neo.webcheck` 干净、快套件 326 个测试全过（用它自己的 `.venv`）。
 - 打包中间产物（`neo/build/`、`neo/dist/`）不进部署树。
+
+### 换版怎么走（`neo/deploy.py` 的命令行）
+
+```
+python -m neo.deploy --to D:\Work\Strata                      # 只看计划，一个文件都不写
+python -m neo.deploy --to D:\Work\Strata --json               # 同一份计划，给机器读
+python -m neo.deploy --to D:\Work\Strata --no-tests           # 计划里不算跑测试那一步
+python -m neo.deploy --to D:\Work\Strata --apply              # 真写
+python -m neo.deploy --to D:\Work\Strata --apply --prune      # 真写，并删掉目标里源里没有的 Neo 文件
+# 别的开关：--from <开发树>（默认脚本所在的仓库根）、--exe <NeoStrata.exe>、--ref <engine_ref.json>
+```
+
+顺序是固定的四步，每一步都要看清输出再走下一步：
+
+1. **dry-run**：`--to <部署树>`。看三道闸门过没过、清单里 new / update / same 各多少、
+   目标里多出来的文件是哪些。这一步不写任何东西，退出码非 0 就是闸门没过。
+2. **停掉在跑的 exe**：进程闸门认两样 —— `neo/state/instance.json` 里记的 pid，和 Windows
+   进程表里镜像路径落在这棵部署树里的 `NeoStrata.exe`。文件被进程锁着的时候写进去就是半个 exe，
+   所以这一条不能绕。关掉窗口（或 `taskkill /PID <pid>`）再走下一步。
+3. **`--apply`**：每个文件先写同目录的临时文件、核对 SHA-256、再 `os.replace` 换上去；
+   写完把整份清单再核一遍摘要，并**在部署树里**跑 `python -m neo.webcheck` 与快套件
+   （`--no-tests` 只跳过测试那一步，webcheck 不跳）。
+4. **事后检查**：部署树里 `python -m neo.webcheck`、快套件、`git -C <部署树> rev-parse HEAD`
+   等于 pin、打开窗口看「接入」页的引擎卡。
+
+`--apply` 之前闸门必须全绿，脚本不看"用户说没事"。目标树没有 git、HEAD 不是 pin、
+跟踪文件被改过、exe 在跑 —— 四种情况都是**一个字节都不写**并说清是哪一道。
 
 ## 测试
 
@@ -701,14 +818,19 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_netprobe neo.tests.test_tokens neo.tests.test_connectors \
                    neo.tests.test_wizard neo.tests.test_connect_api \
                    neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start \
-                   neo.tests.test_model_settings
+                   neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup \
+                   neo.tests.test_deploy
 ```
 
-406 个测试，合起来跑 342.5 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的模块上，单独量的数：
-`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、`test_connect_api` 6.7 秒，
-其余十三个模块合起来 15.6 秒（326 个测试，2026-10-13 实测）——
-日常开发跑那十三个就够（命令见 AGENTS.md）。两处实测改掉的等法（2026-10-13）：
+484 个测试，合起来跑 1054.5 秒 = 17.6 分钟（Windows 11，Python 3.13.15，`serve/server.py --engine mock`
+起真实进程，不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程与建真 git 树的
+模块上，单独量的数：`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、
+`test_connect_api` 6.7 秒，
+其余十六个模块合起来 28.4 秒（400 个测试，2026-10-13 实测）——
+日常开发跑那十六个就够（命令见 AGENTS.md）。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
+`test_engine_setup` 与 `test_deploy` 各自单跑是 8.4 与 5.0 秒，在全量套件里是十几分钟 —— 它们每个用例在
+临时目录里 `git init` + 一次提交造真树，Windows Defender 扫临时目录时一次 `git init` 要几十秒。
+所以这两条在开发时走快套件，全量套件留给换版前跑一次。两处实测改掉的等法（2026-10-13）：
 `neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
 控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
 `poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
@@ -786,9 +908,10 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   显存估算（q4_0 16 单元 = 128 MiB、int8 同形状 = 234 MiB、关掉 KV 常驻 = 0）、GGUF 头部
   （合成文件与真 `qwen3.8-flash-mlx-32b-ikd-q4.p1.gguf` 的 48 层、坏文件与截断文件不抛、
   读头部不超过 1 MiB）。
-- `test_netprobe`（11 个）：注入的 `connect` 记录地址族/端口/超时，三个目标都走 443；全通建议默认源、
+- `test_netprobe`（12 个）：注入的 `connect` 记录地址族/端口/超时，四个目标都走 443；全通建议默认源、
   HF 断 + ModelScope 通才建议 `--source modelscope`、只有镜像通时只说 `HF_ENDPOINT` 而不换源、
-  全断时不推荐任何源；缓存读写与坏文件回空、`probe_cached` 不联网、`describe` 说得出建议。
+  全断时不推荐任何源；`github.com` 只进"引擎源码树通不通"那一栏，不参与模型源建议；
+  缓存读写与坏文件回空、`probe_cached` 不联网、`describe` 说得出建议。
 - `test_tokens`（16 个）：key 形状 `sk-neo-` + 32 位 hex 且 100 个不重复、掩码不含完整 key、
   按 base 缓存命中同一个 key 且文件里存的是明文（界面只回显掩码）、`forget_key` 删了缓存、
   环回不写防火墙提示而 `0.0.0.0` 写且带端口、`base_for` 认 `0.0.0.0`→本机地址、`looks_like_key`
@@ -802,7 +925,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   OpenCode 的 `neo/` 前缀与 `output_limit = 32000`（window 131072）与 compaction 预留、
   OpenClaw 的 `api = "openai-completions"` 与 `primary = neo/<id>` 与关掉 `memory.search` 和 `shellEnv`；
   没有 key 时 unset 列表为空并给出"先建 key"的提示；PowerShell 与 POSIX 两块命令都在。
-- `test_wizard`（13 个）：命令是 `setup.py --yes --no-start` 且端口跟着传、`--no-start` 必须在
+- `test_wizard`（26 个）：命令是 `setup.py --yes --no-start` 且端口跟着传、`--no-start` 必须在
   （服务归监督器起）、`--host 0.0.0.0` 才带 `--host` 且带 key、探测到 modelscope 才加 `--source`、
   用户点名 hf 时不改、源在 `--yes` 之前；四步里"局域网没 key"判成未就绪、没有 `setup.py` 要说出来；
   真跑一次（临时目录里的桩 `setup.py`）命令行与输出都落进 `logs/wizard.log`、缺 `setup.py` 时不跑。
@@ -823,13 +946,41 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   给了 `--key` 就不写 key 缓存；`--base` 压过 `--host`/`--port`（写进 `config.toml` 的 `base_url`
   用的是它）；key 来源要说出来、服务没设 key 时要提醒；`--persist` 只写临时目录里那两个文件、
   每个都留 `.neo-bak` 且备份是用户原来那份、跑两遍 `[model_providers.neo]` 只有一块。
+- `test_paths`（19 个）：根目录那一条规则逐条钉住 —— 两个标记（`setup.py` + `serve/server.py`）都要在、
+  标记表就是 Neo 真跑的那两个文件、**引擎树不许叫 `engine/`**（那是上游放引擎二进制的目录名）、
+  `--root` 压过一切且不做标记检查、`NEO_STRATA_ROOT` 压过应用目录、应用目录有标记时压过 `<app>/strata`、
+  应用目录是空的才用 `<app>/strata`、哪都没有时回应用目录并在理由里写"这里还没有引擎"且监督器的默认值
+  照样能用、`NEO_STRATA_ROOT` 原样照用、相对路径按应用目录解析；`test_real_tree_today` 与
+  `test_manager_default_root_matches` / `test_state_root_matches` 钉住今天这台机器：新规则算出的根
+  与 `manager` / `state` 原来各自算的**逐字节相同**（exe 放进 Strata 根目录时第 3 条先命中）。
+- `test_engine_setup`（35 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
+  archive 地址就是那个 tag 的 zip）；`clone_argv` 是 `--depth 1 --single-branch --branch <tag>`
+  且落到 `strata/`、`checkout` 是 detach 到钉住的 SHA；`plan()` 七个状态各钉一条
+  （`clone` / `zip_copy` / `need_zip` / `not_a_git_tree` / `checkout_pin` / `dirty` / `ready`），
+  摘要对不上的 zip 算"不可用"、zip 装的树靠 Neo 自己记的那一笔算 `ready`、记的 SHA 不是 pin 就不算；
+  摘要是唯一的进门路（pin 里没有摘要时任何 zip 都不解）、解压只搬那个顶层目录并记下来历、
+  两个顶层目录的 zip 不解、目标已存在不解；`run_engine` 在脏树 / 普通目录前拒绝且**一个文件都不动**，
+  `--zip` 那条路装完并记下来历；`status()` 的形状就是页面读的；命令行 `--dry-run` 只打印命令不写文件、
+  `--json` 是 JSON、pin 读不出来说人话。要 git 的用例在没 git 的机器上带理由跳过。
+- `test_deploy`（19 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
+  跟踪文件脏挡；**没有 git 不算干净**；**部署树里 Neo 自己的 untracked 文件不算脏**）、
+  路径（`neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；exe 不在源码清单里；
+  每个文件分 new / update / same；目标里多出来的文件要报出来）、进程（缺 exe 挡、在跑的实例挡）；
+  dry-run 一个文件都不写；`--apply` 写完逐文件核对 SHA-256、闸门不过的树拒绝写、
+  `--prune` 只删"源里没有的 Neo 文件"；`--json` 是 JSON 且说得出闸门过没过；报告里点名闸门与计数；
+  `--to` 不给就报错；pin 与目标树对不上时挡住报告。
+- `test_console` 里的 `TestEngineEndpoint`（4 个）：`GET /neo/engine` 回页面要读的 13 个键、
+  三步的名字、两条路由接在 `console_server.py` 里、认不得的 action 挡回来、
+  `install` 走后台线程（`wait=False`，点一下不能把请求线程堵几十分钟）且 `setup=True`
+  （取完源码交给 `setup.py`，Neo 不自己装）、host 与 key 从监督器传下去。netprobe 与
+  `run_engine` 都换成假的 —— 一次 443 都不连、一次 clone 都不跑。
 - `test_manager_cli`（12 个）：三个开关都不给 = 老默认（`127.0.0.1`、无 key、不打印）；`--lan` 绑
   `0.0.0.0`、`--host` 压过 `--lan`、命令行压过 `launcher.json`；`--token` 现生成一把并打印全串、
   落进 `launcher.json`、**不进 `manager.log`**，已有 key 时不再生成也不打印；端口优先级
   `--port` > `launcher.json` > 发现的第一条 > 8095；`--connect` 打印的那块含 base、key、
   `claude --model …`，且**不创建任何 agent 目录**，不认识的 agent 与没有 key 各说一句人话。
 - `test_ui` 里的接入页检查：「接入」页与顶栏 tab 在、页面里写的 `/neo/net` `/neo/lan` `/neo/token`
-  `/neo/connect` `/neo/wizard` 五条路由服务里都有、`app.js` 里每一个 `$("id")` 在 `index.html` 里都有
+  `/neo/connect` `/neo/wizard` `/neo/engine` 六条路由服务里都有、`app.js` 里每一个 `$("id")` 在 `index.html` 里都有
   对应的 `id="..."`（这类错在窗口里是静默的：`getElementById` 回 null，取 `.textContent` 抛异常，
   整段渲染停住，页面看着像没数据）、新样式块 `.agents`/`.agent`/`.cmd`/`.steps`/`.keyval` 在
   `style.css` 里、`loadConnect` 在顶层；**「复制 token」那条**：按钮 `lan-copy-key` 与只读输入框

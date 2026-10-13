@@ -117,9 +117,17 @@ def git_head(dest) -> str:
     return lines[-1] if rc == 0 and lines else ""
 
 
-def git_dirty(dest) -> bool | None:
-    """git status --porcelain 有内容吗。问不到回 None —— 不能据此说它干净。"""
-    rc, out = git_run(["git", "status", "--porcelain"], cwd=dest)
+def git_dirty(dest, tracked_only: bool = False) -> bool | None:
+    """git status --porcelain 有内容吗。问不到回 None —— 不能据此说它干净。
+
+    tracked_only=True 只看"改了的跟踪文件"，不算 untracked：部署树（D:\\Work\\Strata）
+    里 Neo 的文件按设计就是 untracked（AGENTS.md：那边不提交），把它们算成脏会让
+    换版闸门永远不过。
+    """
+    argv = ["git", "status", "--porcelain"]
+    if tracked_only:
+        argv.append("--untracked-files=no")
+    rc, out = git_run(argv, cwd=dest)
     if rc != 0:
         return None
     return bool(out.strip())

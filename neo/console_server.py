@@ -91,6 +91,11 @@ STRATA_READ_PREFIXES = ("/web/", "/fonts/", "/slots/")
 #: 应答上限与超时：监控页每 2 秒轮询一次，卡住的转发不能把控制台线程挂住
 STRATA_MAX_BYTES = 8_000_000
 STRATA_TIMEOUT_S = 5.0
+#: 引擎卡现状的缓存时长：页面每 6 秒轮询一次，5 秒内的重复请求直接用缓存。
+#: engine_setup.status() 要 spawn 两次 git 再探一次 github 的 443，实测 2026-10-13 在跑整套
+#: 测试的机器上（Defender 在扫磁盘）一次 4-6 秒；HTTP 客户端 6 秒超时会先断开，服务端写
+#: 响应时得到 WinError 10053，页面只看到 fetch 失败。缓存后同一批轮询只有第一次付那几秒。
+ENGINE_STATUS_TTL_S = 5.0
 
 
 def _query_value(path: str, key: str) -> str:
@@ -302,7 +307,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/neo/wizard":
             self._json(200, self.server.wizard_status())
         elif path == "/neo/engine":
-            self._json(200, self.server.engine_status())
+            self._json(200, self.server.engine_status(
+                fresh="fresh=1" in urlsplit(self.path).query))
         elif path == "/neo/catalog":
             self._json(200, self.server.model_catalog(
                 fresh="fresh=1" in urlsplit(self.path).query))
@@ -403,6 +409,8 @@ class ConsoleServer:
         self.thread = None
         self.port = None
         self._pick = port if port is not None else self._default_port(strata_port)
+        self._engine_cache: tuple[float, dict] | None = None   # 引擎卡现状的缓存（见 engine_status）
+        self._engine_lock = threading.Lock()
 
     @staticmethod
     def _default_port(strata_port):
@@ -631,15 +639,27 @@ class ConsoleServer:
                                 wait=False)
 
     # ---- 引擎源码树（neo/engine_setup.py）：按 pin clone / 对齐，再交给 setup.py ----
-    def engine_status(self) -> dict:
-        """引擎源码树现状。读接口：不联网、不写文件（plan 是纯函数）。"""
+    def engine_status(self, fresh: bool = False) -> dict:
+        """引擎源码树现状。读接口：不联网、不写文件（plan 是纯函数）。
+
+        结果缓存 ENGINE_STATUS_TTL_S 秒（常量处的注释是原因：status() 里两次 git spawn
+        加一次 443 探测，负载下要 4-6 秒，客户端先超时、服务端写响应时得到 10053）。
+        页面要最新值时带 ?fresh=1 绕开缓存。
+        """
         from . import engine_setup
-        try:
-            return engine_setup.status()
-        except engine_setup.EngineRefError as exc:
-            return {"state": "bad_ref", "action": "pin 读不出来", "ready": False,
-                    "steps": [], "notes": [str(exc)], "run": engine_setup.run_state(),
-                    "log_tail": engine_setup.log_tail(max_lines=20)}
+        now = time.monotonic()
+        with self._engine_lock:
+            hit = self._engine_cache
+            if not fresh and hit is not None and now - hit[0] < ENGINE_STATUS_TTL_S:
+                return hit[1]
+            try:
+                status = engine_setup.status()
+            except engine_setup.EngineRefError as exc:
+                status = {"state": "bad_ref", "action": "pin 读不出来", "ready": False,
+                          "steps": [], "notes": [str(exc)], "run": engine_setup.run_state(),
+                          "log_tail": engine_setup.log_tail(max_lines=20)}
+            self._engine_cache = (time.monotonic(), status)
+            return status
 
     def engine_run(self, body: dict) -> dict:
         """按 pin 装 / 对齐引擎源码，然后交给 setup.py（后台跑，输出进 engine.log）。

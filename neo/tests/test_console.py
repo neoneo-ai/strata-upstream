@@ -56,7 +56,7 @@ class FakeAdapter(EngineAdapter):
                 "loaded": False, "model": "", "max_context": 0, "metrics": {}}
 
 
-def req(url, method="GET", body=None, origin=None, host_header=None):
+def req(url, method="GET", body=None, origin=None, host_header=None, timeout: float = 6.0):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(url, data=data, method=method)
     r.add_header("content-type", "application/json")
@@ -65,7 +65,7 @@ def req(url, method="GET", body=None, origin=None, host_header=None):
     if host_header:
         r.add_header("host", host_header)
     try:
-        with urllib.request.urlopen(r, timeout=6) as resp:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
             return resp.status, {k.lower(): v for k, v in resp.headers.items()}, \
                 resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
@@ -308,37 +308,49 @@ class TestRunningInstance(unittest.TestCase):
 
 
 class TestModelSettingsEndpoint(unittest.TestCase):
-    """模型设置页的接口：读四栏、写覆盖配置、恢复原样。引擎是假的，不起进程。"""
+    """模型设置页的接口：读四栏、写覆盖配置、恢复原样。引擎是假的，不起进程。
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name) / "root"
-        self.root.mkdir()
-        self.cfg_file = self.root / "strata-test.json"
-        self.cfg_file.write_text(json.dumps({
+    整类共用一个控制台服务（setUpClass 起一次）：实测 2026-10-13 每条用例各起一个时
+    8 条要 16.4 秒（每条付一次"起服务 + 等就绪"），共用之后每条只剩几次 HTTP 往返。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls._tmp.name) / "root"
+        cls.root.mkdir()
+        cls.cfg_file = cls.root / "strata-test.json"
+        cls.cfg_file.write_text(json.dumps({
             "model_name": "Qwen Test", "exe": "strata.exe", "port": 8080,
             "args": ["model.gguf", "--max-context", "65536", "--kv", "int8",
                      "--kv-resident", "32768", "--vram-reserve-mib", "1000", "--vision"],
             "vision": {"mmproj": "mmproj.gguf", "gpu": True}}), encoding="utf-8")
-        self.upstream_bytes = self.cfg_file.read_bytes()
-        self._old_state = state.STATE
-        state.STATE = Path(self._tmp.name) / "state"
+        cls.upstream_bytes = cls.cfg_file.read_bytes()
+        cls._old_state = state.STATE
+        state.STATE = Path(cls._tmp.name) / "state"
         state.STATE.mkdir()
-        self.addCleanup(setattr, state, "STATE", self._old_state)
-        self.was = state.LAUNCHER.exists()
-        self.backup = state.LAUNCHER.read_bytes() if self.was else b""
-        self.sup = Supervisor(FakeAdapter(self.root), 8080)
-        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
-        self.console.shell = RecordingShell()
-        self.url = self.console.start()
+        cls.was = state.LAUNCHER.exists()
+        cls.backup = state.LAUNCHER.read_bytes() if cls.was else b""
+        cls.sup = Supervisor(FakeAdapter(cls.root), 8080)
+        cls.console = ConsoleServer(cls.sup, host="127.0.0.1", port=free_port())
+        cls.console.shell = RecordingShell()
+        cls.url = cls.console.start()
 
-    def tearDown(self):
-        self.console.stop()
-        if self.was:
-            state.LAUNCHER.write_bytes(self.backup)
+    @classmethod
+    def tearDownClass(cls):
+        cls.console.stop()
+        setattr(state, "STATE", cls._old_state)
+        cls._tmp.cleanup()
+        if cls.was:
+            state.LAUNCHER.write_bytes(cls.backup)
         elif state.LAUNCHER.exists():
             state.LAUNCHER.unlink()
+
+    def setUp(self):
+        # 每条用例从"没有覆盖文件"的干净状态开始（上一条用例写过的那份删掉）
+        overlay = model_settings.overlay_path(self.cfg_file)
+        if overlay.exists():
+            overlay.unlink()
 
     def get(self, path):
         return req(self.url.rstrip("/") + path)
@@ -489,21 +501,21 @@ class TestStrataChannel(unittest.TestCase):
         cls.thread = threading.Thread(target=lambda: cls.httpd.serve_forever(poll_interval=0.05),
                                       daemon=True)
         cls.thread.start()
+        # 控制台整类共用一个（实测 2026-10-13 每条用例各起一个时 9 条要 10.2 秒，
+        # 每条付一次"起服务 + 等就绪"）；要"上游没在跑"的那条用例自己起一个。
+        cls.sup = Supervisor(FakeAdapter(ROOT), cls.up, api_key=FakeStrataHandler.key)
+        cls.console = ConsoleServer(cls.sup, host="127.0.0.1", port=free_port())
+        cls.url = cls.console.start()
+        cls.sup.console_port = cls.console.port
 
     @classmethod
     def tearDownClass(cls):
+        cls.console.stop()
         cls.httpd.shutdown()
         cls.httpd.server_close()
 
     def setUp(self):
         FakeStrataHandler.seen = []
-        self.sup = Supervisor(FakeAdapter(ROOT), self.up, api_key=FakeStrataHandler.key)
-        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
-        self.url = self.console.start()
-        self.sup.console_port = self.console.port
-
-    def tearDown(self):
-        self.console.stop()
 
     def get(self, path):
         return req(self.url.rstrip("/") + path)
@@ -593,11 +605,21 @@ class TestEngineEndpoint(unittest.TestCase):
 
     不起服务、不联网、不 clone：netprobe 换成假的（一次 443 都不连），
     engine_setup.run_engine 换成记录调用的假函数（真 clone 会联网、会往仓库里写东西）。
+
+    控制台整类共用一个（实测 2026-10-13 每条用例各起一个时 6 条要 27.1 秒）。
     """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.sup = Supervisor(FakeAdapter(ROOT), 8080)
+        cls.console = ConsoleServer(cls.sup, host="127.0.0.1", port=free_port())
+        cls.url = cls.console.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.console.stop()
+
     def setUp(self):
-        self.sup = Supervisor(FakeAdapter(ROOT), 8080)
-        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
         self._probe = netprobe.probe_cached
 
         def fake_probe(timeout=3.0, force=False, connect=None):
@@ -641,37 +663,33 @@ class TestEngineEndpoint(unittest.TestCase):
     def test_the_engine_card_answers_over_http(self):
         """真走一次 HTTP：GET /neo/engine 要答 200 与页面要读的那些键（不能只测方法本身）。
 
-        起控制台要重试几次：这台机器上跑测试时端口常被上一批测试的服务占着（`free_port()`
-        只保证那一刻没人用），`start()` 就报"控制台端口起不来"。
+        超时给 20 秒：负载下（18 个模块一起跑、Defender 在扫磁盘）engine_setup.status() 里
+        两次 git spawn 加一次 github 的 443 探测要 4-6 秒；默认那 6 秒超时是客户端先断开、
+        服务端写响应时得到 WinError 10053，这条测试就变成"重试三次 + 27 秒"（实测
+        2026-10-13）。控制台整类共用，这里只付一次请求。
         """
-        url = None
-        for _ in range(6):
-            self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
-            try:
-                url = self.console.start()
-                break
-            except RuntimeError:
-                time.sleep(0.3)
-        self.assertIsNotNone(url, "六次都起不来控制台（端口被占）")
-        self.addCleanup(self.console.stop)
-        # 请求也要重试：这台机器上跑整套测试时（18 个模块一起跑，磁盘被 Defender 扫），
-        # 一次 GET 超过 req() 的 6 秒不算异常，客户端超时先断开、服务端就报 10053。
-        got = None
-        for _ in range(3):
-            try:
-                code, _h, body = req(url.rstrip("/") + "/neo/engine")
-                got = (code, body)
-                break
-            except (urllib.error.URLError, OSError) as exc:
-                got = exc
-                time.sleep(0.5)
-        self.assertIsInstance(got, tuple, f"三次都没答上来：{got}")
-        code, body = got
+        code, _h, body = req(self.url.rstrip("/") + "/neo/engine", timeout=20.0)
         self.assertEqual(code, 200)
         data = json.loads(body)
         self.assertIn(data["state"], engine_setup.STATE_ACTION)
         for key in ("clone_command", "steps", "ready", "run", "log_tail"):
             self.assertIn(key, data, f"引擎卡要读 {key}")
+
+    def test_the_engine_card_answers_from_the_cache_within_the_ttl(self):
+        """TTL 之内的第二次请求用缓存：页面每 2 秒轮询一次，不能每次都付那两次 git spawn。
+
+        带 ?fresh=1 的那次要绕开缓存（页面上"重新检查"点的就是它）。
+        """
+        base = self.url.rstrip("/") + "/neo/engine"
+        first = json.loads(req(base, timeout=20.0)[2])
+        t0 = time.monotonic()
+        again = json.loads(req(base, timeout=20.0)[2])
+        self.assertLess(time.monotonic() - t0, 2.0, "缓存命中要立刻答完，不能再跑一遍 git")
+        self.assertEqual(first["state"], again["state"])
+        self.assertEqual(first["tag"], again["tag"])
+        code, _h, body = req(base + "?fresh=1", timeout=20.0)
+        self.assertEqual(code, 200)
+        self.assertIn("state", json.loads(body))
 
     def test_an_unknown_action_is_refused(self):
         out = self.console.engine_run({"action": "delete"})

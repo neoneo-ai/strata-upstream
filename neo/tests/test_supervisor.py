@@ -26,6 +26,34 @@ from neo.supervisor import (EXTERNAL, HALTED, IDLE, RESTARTING, RUNNING, STARTIN
                             Supervisor, diagnose)
 
 
+class FastEngine(MockEngine):
+    """起 neo/tests/mock_server.py 的适配器：真进程、真端口、真 HTTP、真 kill，
+    但不 import 整个上游服务。
+
+    实测 2026-10-13（这台机器，Windows 11，Defender 在扫磁盘）：起
+    `serve/server.py --engine mock` 一次约 3.9 秒，起那个 40 行标准库服务一次约 0.3 秒；
+    test_supervisor 里 11 次 spawn 就是 43 秒，占这个模块 51 秒里的绝大部分。
+    监督的链路（启动 → 就绪 → 被杀 → 自动重启 → 退避 → 熔断 → 停止不重启）一个字都不少，
+    换的只是"被监督的那个进程里装了什么"。上游真行为（就绪行进日志、/health 的真字段）
+    由 test_upstream_api.py 和 TestStartAndReady 里那条用真 serve/server.py 的用例守着。
+    """
+    name = "mock"                       # 状态页与断言里的引擎名不变
+    entry = "neo/tests/mock_server.py"
+
+    def plan(self, port: int, host: str = "127.0.0.1", api_key: str = "",
+             model_id: str = "", gpu=None):
+        from neo import state
+        from neo.engines.base import LaunchPlan
+        argv = [state.python_executable(self.root),
+                str(self.root / "neo" / "tests" / "mock_server.py"), "--port", str(port)]
+        if api_key:
+            argv += ["--api-key", api_key]
+        return LaunchPlan(argv=argv, cwd=str(self.root), env=None,
+                          log_path=str(state.server_log_path("mock")), port=port, host=host,
+                          model=model_id or "mock", engine=self.name,
+                          label="mock 服务（测试）", ready_timeout_s=60)
+
+
 class NoPlanEngine(MockEngine):
     """plan() 起不来的适配器（真实场景：配置里模型文件不在），日志路径指向配置的 log。
 
@@ -94,7 +122,10 @@ def dead_pid() -> int:
 
 
 class SupervisorBase(unittest.TestCase):
-    def make(self, **kw):
+    #: 默认被监督的进程：neo/tests/mock_server.py（原因见 FastEngine 的注释）
+    engine_cls = FastEngine
+
+    def make(self, engine=None, **kw):
         # 轮询间隔按"测试要跑得快"给：状态机每 0.05 秒看一次子进程、每 0.1 秒问一次
         # /health，就绪与崩溃都是立刻能看见的事，等的时间由条件决定（见 wait）。
         kw.setdefault("backoff", (0.5, 0.8, 1.0))
@@ -102,7 +133,7 @@ class SupervisorBase(unittest.TestCase):
         kw.setdefault("max_restarts", 3)
         kw.setdefault("poll_s", 0.05)
         kw.setdefault("probe_s", 0.1)
-        self.sup = Supervisor(MockEngine(ROOT), free_port(), **kw)
+        self.sup = Supervisor((engine or self.engine_cls)(ROOT), free_port(), **kw)
         return self.sup
 
     def tearDown(self):
@@ -125,7 +156,9 @@ class SupervisorBase(unittest.TestCase):
 
 class TestStartAndReady(SupervisorBase):
     def test_start_to_running(self):
-        sup = self.make()
+        # 这一条用真的 serve/server.py --engine mock：要验的就是"上游的就绪行真的进了日志"，
+        # 那是 Neo 与上游的接缝，不能由 neo/tests/mock_server.py 替它作证（原因见 FastEngine）。
+        sup = self.make(engine=MockEngine)
         sup.start()
         s = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="服务就绪")
         self.assertTrue(s["process_alive"], "子进程应该在跑")

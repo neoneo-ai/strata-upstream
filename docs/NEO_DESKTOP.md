@@ -104,9 +104,22 @@ idle ──启动──> starting ──/health 应答──> running
 - **用户点"停止"后绝不自动拉起**：`intent=stop` 是硬开关，退避等待会被它立刻打断。
 - **探活分三层**：端口在听（TCP）→ `/health` 应答（服务活着）→ `loaded`（模型已加载）。
   模型加载要几分钟，这段时间 Neo 显示"启动中"，不算失败。
+- **探活的节奏：进程死活按 `poll_s` 看，`/health` 按 `probe_s` 问**（2026-10-13 改）。之前是
+  每一轮都探一次，而一次探活最坏是 TCP 1.2 秒 + `/health` 4 秒 + `/metrics` 4 秒，`proc.poll()`
+  只在两轮之间看一眼 —— 子进程崩了要等这一轮探活跑完才看得见。实测 2026-10-13 本机
+  （`neo/tests/probes/probe_cost.py`，杀掉服务后逐层计时）：监听被杀掉后 Windows 把那个端口黑洞化
+  （SYN 没人回，不是 RST），一次探活 1.21 + 2.02 + 2.02 = 5.25 秒，用户看到的就是"进程已经崩了，
+  状态页还写着运行中，自动重启晚 5 秒才开始"。TCP 那一层的超时从 1.2 秒收到 0.25 秒（回环上连
+  一个活着的监听是 0.00 秒，同一脚本实测），发现退出从 2.06 秒到 **0.02 秒**、启动到就绪从
+  1.82 秒到 **0.61 秒**（`neo/tests/probes/supervisor_events.py`：读监督器自己记的事件时间戳）。
 - **引擎重载不归 Neo**：`serve/server.py` 自己会重启引擎（`StrataEngine.restart`，issue #344），
   Neo 只在事件里显示一条提示，不干预。
 - **端口上已有活着的服务就接手**：用户先用 `START-HERE.bat` 起来了，Neo 认下它，不重复启动。
+  Neo 自己起不来（配置缺东西、熔断）时也一样：盯端口那一层探到活着的服务就交回主循环去接手
+  （`_watch_external` 在 `intent=run` 时回 True）。之前只有"运行中（外部启动）"这个显示，没有交回
+  这一步，Neo 就永远停在"外部启动"、点启动不会接手 —— 2026-10-13 把 TCP 超时从 1.2 秒收到
+  0.25 秒后 `test_adopt_shows_config_log` 才暴露这件事：那 1.2 秒正好是给外部服务的启动窗口，
+  窗口没了这条路径就断了。
 - **认服务是自家的还是外人的，走进程树，不能只比 pid**：启动服务的那个 python 自己会再拉
   一个进程去跑脚本，所以端口上的监听者通常是 Neo 孩子的孩子。实测 2026-10-12 在
   `D:\Work\Strata`：NeoStrata 40856 → NeoStrata 46380 → `.venv\Scripts\python.exe`（跳板）
@@ -833,28 +846,38 @@ python -m neo.deploy --to D:\Work\Strata --apply --prune      # 真写，并删�
 ## 测试
 
 ```
-python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_supervisor \
-                   neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console \
-                   neo.tests.test_netprobe neo.tests.test_tokens neo.tests.test_connectors \
-                   neo.tests.test_wizard neo.tests.test_connect_api \
-                   neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start \
-                   neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup \
-                   neo.tests.test_deploy
+python -m neo.tests.run_all --quick --skip-network   # 开发时：十六个模块，10.2 秒
+python -m neo.tests.run_all                          # 换版前：十九个模块，含克隆那条
+python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串行
 ```
 
-492 个测试，合起来跑 1067.1 秒 = 17.8 分钟（Windows 11，Python 3.13.15，`serve/server.py --engine mock`
-起真实进程，不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程与建真 git 树的
-模块上，单独量的数：`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、
-`test_connect_api` 6.7 秒，
-其余十六个模块合起来 26.4 秒（409 个测试，2026-10-13 实测）——
-日常开发跑那十六个就够（命令见 AGENTS.md）。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
+496 个测试（Windows 11，Python 3.13.15，起真实进程，不需要 GPU、不需要装好的模型、不碰真实用户配置；
+唯一真联网的是 `test_engine_setup.TestRunAndPage` 那条克隆路径）。跑法是 `python -m neo.tests.run_all`：
+它把每个模块切成测试类、按类并行（默认 4 个并发）、每个类报秒数，并把失败的类单独重跑一次——并发下的
+端口/负载抖动要和真失败分开。2026-10-13 本机实测：**`--skip-network` 时墙上 18.8 秒 / 488 个用例，
+带克隆那条 29.2 秒**；同样的单元串行相加是 71.1 秒，而 19 个模块一条 `python -m unittest` 跑是
+1067.1 秒 = 17.8 分钟（492 个测试，这是并行之前的数）。`--quick` 是开发时跑的十六个模块（不起真进程）：
+**墙上 10.2 秒 / 401 个用例**。`--skip-network` 摘掉的那条克隆路径在同一台机器同一天量到 6.8 秒与
+145.3 秒——全量套件的墙上时间跟着网络走，所以它单独成一个开关。
+
+监督器的测试驱动 `neo/tests/mock_server.py`（stdlib 小服务，按 Neo 读的形状答 `/health` 与 `/metrics`），
+作为真子进程跑在真端口上：启动、就绪、杀掉、自动重启、退避、熔断全是真的。起进程 0.27 秒，
+`serve/server.py --engine mock` 也是 0.27 秒，小服务省掉的是"第一次答 `/health`"要的那 3.5 秒。
+`TestStartAndReady.test_start_to_running` 用真的 `serve/server.py --engine mock`：要验的是"上游的就绪行
+真的进了日志"，那是 Neo 与上游的接缝，不能让假服务替它作证。
+
+开销全在起真进程与建真 git 树的模块上。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
 `test_engine_setup` 与 `test_deploy` 各自单跑是 8.4 与 5.0 秒，在全量套件里是十几分钟 —— 它们每个用例在
 临时目录里 `git init` + 一次提交造真树，Windows Defender 扫临时目录时一次 `git init` 要几十秒。
 所以这两条在开发时走快套件，全量套件留给换版前跑一次。两处实测改掉的等法（2026-10-13）：
 `neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
 控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
 `poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
-`test_connect_api` 39.6→6.7 秒、`test_console` 34.7→9.1 秒、`test_supervisor` 70.3→56 秒：
+`test_connect_api` 39.6→6.7 秒、`test_console` 34.7→9.1 秒、`test_supervisor` 70.3→56 秒。
+再往下是这一轮的两件事（2026-10-13，见上面「监督器的行为」）：探活按 `probe_s` 限速 + TCP 超时
+1.2→0.25 秒，被监督的进程换成 `neo/tests/mock_server.py`。按类并行后最慢的两个类：
+`TestCrashRestart` 29.3→**7.0** 秒、`TestExternalService` 42 秒（并发下偶发失败）→**2.6** 秒——
+删掉一个用例都没用，慢的是"发现进程死了"要等一轮探活跑完。
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、

@@ -312,6 +312,7 @@ class Supervisor:
             self.started_at = time.time()
             self.state = STARTING
             self.adopted_pid = None
+            self._last_probe = 0.0      # 刚起来的进程：第一探不排队，就绪要马上看得见
         self._note(f"启动 {plan.label}（端口 {plan.port}，进程 {proc.pid}"
                    f"{'' if in_job else '，Job Object 没建起来'}）")
         return True
@@ -324,6 +325,7 @@ class Supervisor:
             return False
         with self._lock:
             self._probe = probe
+            self._last_probe = time.time()   # 刚探过：下一探按 probe_s 的节奏，不排队
             self.state = RUNNING
             self.adopted_pid = jobobj.listener_pid(self.port)
             self.started_at = time.time()
@@ -346,8 +348,24 @@ class Supervisor:
         self._note(f"接手已在运行的服务：{probe.get('model')}（端口 {self.port}）")
         return True
 
+    def _exit_of(self, proc) -> dict:
+        """子进程已经退出（poll() 非 None）时的退出信息。"""
+        code = proc.returncode
+        with self._lock:
+            self._proc = None
+        self._close_log()
+        return {"code": code, "at": time.time(), "reason": "", "tail": self.tail(4000)}
+
     def _monitor(self):
-        """盯到进程结束 / 接手的服务消失 / 加载超时。返回退出信息；None = intent 已变。"""
+        """盯到进程结束 / 接手的服务消失 / 加载超时。返回退出信息；None = intent 已变。
+
+        探活按 `probe_s` 的节奏问，进程死活按 `poll_s` 的节奏看。之前是每一轮都探一次：
+        一次探活最坏是 tcp_open 1.2 秒 + /health 4.0 秒 + /metrics 4.0 秒，而 `proc.poll()`
+        只在两轮之间看，于是子进程死了要等这轮探活跑完才看得见。实测 2026-10-13
+        （neo/state/tmp_events.py，杀掉服务后看监督自己的 events 时间戳）：发现退出
+        0.01 秒与 2.05 秒交替出现，上一轮量到 4.13 秒——用户看到的就是"进程已经崩了，
+        状态页还写着运行中，重启要等好几秒"。
+        """
         misses = 0
         while True:
             with self._lock:
@@ -357,28 +375,32 @@ class Supervisor:
                 deadline = self._ready_deadline
                 st = self.state
             if proc is not None and proc.poll() is not None:
-                code = proc.returncode
-                with self._lock:
-                    self._proc = None
-                self._close_log()
-                return {"code": code, "at": time.time(), "reason": "", "tail": self.tail(4000)}
-            probe = self.adapter.probe(self.port, self.api_key)
+                return self._exit_of(proc)
             with self._lock:
-                self._probe = probe
-                if probe.get("healthy"):
-                    misses = 0
-                    self._ready_deadline = 0.0
-                    if st in (STARTING, RESTARTING):
-                        self.state = RUNNING
-                        self._note(f"服务就绪：{probe.get('model')}"
-                                   f" · 上下文 {probe.get('max_context')}")
-                elif st == RUNNING and proc is None:
-                    # /health 一时不答不等于服务没了：服务正在生成时 GIL 被占满，
-                    # 几秒不答是常态。只有端口真的不听了才算"接手的服务不见了"。
-                    # 实测 2026-10-12 在 D:\Work\Strata：run-swift-iq3_xxs.bat 起的服务在
-                    # 8080 上跑得好好的，6 秒里 3 次 /health 没答就被判成不见了，
-                    # Neo 接着把它重启了一遍（用户看到的就是"状态不对"）。
-                    misses = misses + 1 if not self.adapter.listening(self.port) else 0
+                due = time.time() - self._last_probe >= self.probe_s
+                if due:
+                    self._last_probe = time.time()
+            if due:
+                probe = self.adapter.probe(self.port, self.api_key)
+                with self._lock:
+                    self._probe = probe
+                    if probe.get("healthy"):
+                        misses = 0
+                        self._ready_deadline = 0.0
+                        if st in (STARTING, RESTARTING):
+                            self.state = RUNNING
+                            self._note(f"服务就绪：{probe.get('model')}"
+                                       f" · 上下文 {probe.get('max_context')}")
+                    elif st == RUNNING and proc is None:
+                        # /health 一时不答不等于服务没了：服务正在生成时 GIL 被占满，
+                        # 几秒不答是常态。只有端口真的不听了才算"接手的服务不见了"。
+                        # 实测 2026-10-12 在 D:\Work\Strata：run-swift-iq3_xxs.bat 起的服务在
+                        # 8080 上跑得好好的，6 秒里 3 次 /health 没答就被判成不见了，
+                        # Neo 接着把它重启了一遍（用户看到的就是"状态不对"）。
+                        misses = misses + 1 if not self.adapter.listening(self.port) else 0
+                # 探活跑完的这几秒里子进程可能正好死了：马上看一眼，不要等下一轮
+                if proc is not None and proc.poll() is not None:
+                    return self._exit_of(proc)
             if proc is None and misses >= 3:
                 return {"code": None, "at": time.time(), "reason": "接手的服务不见了",
                         "tail": self.tail(4000)}
@@ -448,6 +470,14 @@ class Supervisor:
                     external_log = self.adapter.log_path_for(self.model_id)
                     if external_log:
                         self._log_path = external_log
+                    if self.intent == "run":
+                        # 用户要它跑着、端口上有一个活着的服务：交回主循环去 `_adopt` 认下它。
+                        # 接手的动作（记 adopted_pid、把日志页指到服务的日志、进 running）在
+                        # `_adopt` 里，盯端口这一层替它做不了。之前这一条没有，Neo 就永远停在
+                        # "运行中（外部启动）"，点启动不会接手（实测 2026-10-13：把 tcp_open 的
+                        # 超时从 1.2 秒收紧到 0.25 秒后 test_adopt_shows_config_log 就输了 ——
+                        # 那 1.2 秒正好是给外部服务的启动窗口，窗口没了这条路径就断了）。
+                        return True
             self._sleep(self.watch_s)
 
     def _loop(self) -> None:

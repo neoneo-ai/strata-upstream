@@ -62,22 +62,26 @@ neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
 neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings
 neo.tests.test_paths neo.tests.test_engine_setup neo.tests.test_deploy`
-(492 tests, 1067.1 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; the same 19 modules
-were 406 tests / 342.5 s before the split, and 243.4 s on the earlier 329-test run). The modules that start real
-processes are the whole cost - measured on their own: `test_supervisor`
-56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
-the other thirteen together are 15.6 s. The three newest modules add 91 tests and 12.6 s together
-(`test_engine_setup` + `test_netprobe` + `test_paths` + `test_deploy`, measured 2026-10-13; they need git for
-the clone and dirty-tree cases and skip with a reason without it). For a quick pass while developing, run the
-sixteen modules that start no processes and leave the three out:
-`python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
-neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
-neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
-neo.tests.test_logging neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup
-neo.tests.test_deploy` (26.4 s, 409 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
-thirteen-module run). `test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one
-commit per case), which is why the full 19-module run is 17.6 minutes while those two alone measure 8.4 s and
-5.0 s - run the quick pass while developing, the full pass before a deploy. `python -m neo.webcheck` checks the page
+Run them through `python -m neo.tests.run_all`: it splits every module into its test classes and runs the
+classes in parallel (`--jobs`, default `min(4, cores)`), prints seconds per class, and re-runs a failed class
+alone once so a port/load flake is reported apart from a real failure. Measured 2026-10-13 on the same
+machine: **18.8 s wall for 488 tests with `--skip-network`, 29.2 s with the clone case in** (the same units
+summed serially are 71.1 s; the 19 modules as one `python -m unittest` line were 1067.1 s before this, and
+492 tests / 1067.1 s is the number that paragraph used to carry). `--quick` takes the sixteen modules that
+start no processes: **10.2 s wall, 401 tests**. `--skip-network` drops the one unit that really touches the
+network - `test_engine_setup.TestRunAndPage` clones the pinned tag, and it measured 6.8 s and 145.3 s on the
+same machine the same day, so the wall clock of a full run follows the link.
+`test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one commit per case),
+which is why they were 8.4 s and 5.0 s alone and minutes inside a serial full run: Windows Defender scans
+each temp dir. Run the quick pass while developing, the full pass before a deploy.
+Supervisor tests drive `neo/tests/mock_server.py` - a stdlib service that answers `/health` and `/metrics`
+in the shapes Neo reads - as a real subprocess on a real port, so start, ready, kill, restart, backoff and
+breaker all stay real: spawn is 0.27 s against `serve/server.py --engine mock`'s 0.27 s, and what the mock
+skips is the 3.5 s it takes the full server stack to answer `/health` the first time.
+`TestStartAndReady.test_start_to_running` keeps the real `serve/server.py --engine mock`, because "the
+upstream readiness line reaches the log" is the Neo/upstream seam and the mock must not vouch for it.
+
+`python -m neo.webcheck` checks the page
 scripts (the two `<script>` files as one program) in about a second, and `build_exe` runs it before packaging.
 Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 

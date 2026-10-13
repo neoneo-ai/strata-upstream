@@ -41,8 +41,16 @@ class LaunchPlan:
     extra: dict = field(default_factory=dict)
 
 
-def tcp_open(host: str, port: int, timeout: float = 1.2) -> bool:
-    """端口上有没有服务在听（不发送任何请求）。"""
+def tcp_open(host: str, port: int, timeout: float = 0.25) -> bool:
+    """端口上有没有服务在听（不发送任何请求）。
+
+    超时给 0.25 秒而不是 1.2 秒：这是回环地址，连一个活着的监听是毫秒级的事
+    （实测 2026-10-13 本机 neo/state/tmp_probe_cost.py：服务活着时 tcp_open 0.00 秒）。
+    1.2 秒只在端口已经没人听的时候才付，而那正是"要尽快知道"的时候：监听被杀掉后
+    Windows 把这个端口黑洞化（SYN 没人回，不是 RST），tcp_open 就等满超时 —— 实测
+    1.21 秒，一次 probe 因此是 1.21 + 2.02 + 2.02 = 5.25 秒，监督的 _monitor 每轮都要
+    跑一次它，于是进程崩了之后状态页要 5 秒才变、自动重启也晚 5 秒开始。
+    """
     host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
     try:
         with socket.create_connection((host, port), timeout=timeout):

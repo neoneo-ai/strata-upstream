@@ -81,7 +81,7 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 394 个测试（见下） |
+| `neo/tests/` | 406 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -234,22 +234,46 @@ Neo **不改上游的下载源选择**，只把用户点的那一个翻译成上
   Windows 防火墙命令（`netsh advfirewall firewall add rule ... port=<端口>`）。
   绑局域网而不带 key 会被 `wizard.py` 判成"未就绪"，`neo/manager.py` 也会打一行警告。
 
-### token 管到哪（`serve/server.py` 的 `_authorized`）
+### token 管到哪，监控页怎么读到数据（`neo/console_server.py` 的 `/strata/`）
 
 token 只管模型：所有 `POST`（`/v1/*`、`/settings`、`/config`、`/load`、`/unload`、`/slots/*`）与模型清单
 （`/models`、`/v1/models`）在任何地址都只认 key。监控的只读端点（`/metrics`、`/metrics/prometheus`、
-`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/v1/status`）对**本机来的**
-请求不带 key 也答 —— 判据是 socket 报的对端地址（127.x / ::1，不是客户端自己写的 `Host` 头），加上
-`Host` 必须是这台服务认的名字：设了 key 时上游本来就跳过 Host 检查，这一条把它补回来，DNS rebinding
-的页面拿到的是 401，不是面板。从别的机器读这些端点照样要 key（`/status` 与 `/api/requests` 带最近
-一次回答的尾巴，#212）。
+`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/v1/status`）设了 key 之后
+**同样要 key** —— 上游对这些端点没有本机豁免。
 
-Neo 窗口里的监控页因此不用填 key：设了 token 之后 `http://127.0.0.1:8080/#monitor` 的 Speed / VRAM /
-GPU 卡片照旧出数。改之前它每秒一次 `GET /metrics` 吃 401，右上角写 "API key needed"，卡片全是"—"
-（`serve/web/app.js` 的 key 只存在浏览器 localStorage，要在 About > Settings 里手填）。
-实测 2026-10-13（mock 引擎，`serve/test_security.py` 新增 4 条）：本机无 key 读 9 个监控端点全 200；
-把 `loopback_peer` 判成假后同样这些端点 401、带上 key 200；`Host: evil.example.com` 401；
-`POST /v1/chat/completions` 无 key 401、带 key 200。
+Neo 不动上游这一条：先前打在 `serve/server.py` 上的本机豁免补丁已在 2026-10-13 撤掉，部署树
+（`D:\Work\Strata`，上游仓库的一个 checkout）里的 `serve/server.py` 恢复成上游原样（391,688 字节，
+`git status` 里不再有已修改的跟踪文件）。监控页要读数据走 Neo 自己的只读通道：控制台把上游的页面与
+面板端点从自己的端口转发出去，key 由 Neo 在服务端附上，页面看不到 key。状态页给的监控地址因此是
+`http://127.0.0.1:8083/strata/#monitor`；聊天页照旧直连上游（`http://127.0.0.1:8080/`）—— 聊天要 `POST`，
+Neo 不替聊天页花用户的 token。
+
+通道的规矩（`neo/console_server.py` 的 `STRATA_READ_PATHS` / `STRATA_READ_PREFIXES`）：
+
+| 规矩 | 具体 |
+| --- | --- |
+| 只转 GET 与 HEAD | `POST /strata/*` 一律 405，写与推理转不出去 |
+| 白名单 | `""`、`/api-monitor`、`/health`、`/metrics`、`/metrics/prometheus`、`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/models`、`/v1/models`、`/v1/status`；前缀 `/web/`、`/fonts/`、`/slots/` |
+| 推理不转 | `/v1/*` 里除 `/v1/models`、`/v1/status` 之外一律 405（`/v1/chat/completions` GET 也 405） |
+| 上游没起来 | 502，说清是上游没应答 |
+| 一次的上限 | 应答最多 8 MB、上游请求 5 秒超时 |
+| 不遮 Neo 自己的路 | `/strata` 与 `/strata/` 都归到上游根（`""`），Neo 的 `/neo/*` 路由照常 |
+
+上游的页面用相对路径发请求，所以 `/strata/` 这个前缀天然把页面、它的 js/css、它的数据请求一起带过来。
+`/api-monitor` 与 `/api/requests` 要上游配置里 `api_monitor` 开着才发，关着时通道原样转回 404。
+
+实测 2026-10-13（mock 引擎设了 key，`tools/_strata_channel_check.py`，23 条全过）：直连上游 `/metrics`
+无 key 401；经通道 200，`live`/`totals`/`hardware`/`hardware_static` 四节齐，应答里不带 key；上游页面与
+`web/app.js`、`web/tokens.css` 都 200；`POST /strata/settings` 405、`POST /strata/v1/chat/completions` 405、
+`GET /strata/v1/chat/completions` 405、`POST /strata/load` 405；上游带 key 的 `/v1/models` 200、无 key 401。
+浏览器层（`tools/_strata_page_check.py`，headless Edge，10 条全过）：同一个上游页面直连时 DOM 里写着
+"API key needed"，经通道时没有这句、监控标签是激活的、`renderMonitor` 跑到位、状态徽标点亮。
+
+回归测试：`neo/tests/test_console.py` 的 `TestStrataChannel`（假上游，覆盖页面与资源、服务端附 key、
+查询串、写操作、推理、路径拒绝、上游没起来、不遮 Neo 自己的路、路径常量一致）和
+`neo/tests/test_engines.py` 的 `test_pages_monitor_goes_through_the_console`；
+`neo/tests/test_upstream_api.py` 反过来盯"Neo 不依赖上游补丁"——上游文件里不许出现豁免补丁的标记，
+而监控页与那些只读端点必须还在。
 
 ### 四个 agent 的配方（`neo/connectors.py`）
 
@@ -285,6 +309,8 @@ python -m neo.wizard --check
 
 模型设置页改的是**一个模型的启动参数**，四栏：上下文长度（`--max-context`）、KV 类型（`--kv`）、
 KV 常驻单元（`--kv-resident`）、显存保留（`--vram-reserve-mib`），外加图片开关（`--vision` 与 `vision` 段）。
+它是「设置」页里的第一块，左边栏不再有独立页签（2026-10-13 并入）：控件 id 一个没动，
+`showPage("settings")` 一次把「模型设置」与「启动设置」两块都拉出来（`if (name === "settings") { loadConfig(); loadModelSettings(); }`）。
 写法是**覆盖配置**：`setup.py` 写的那份 `strata-*.json` 只读，改动写进 `neo/state/configs/strata-<id>.neo.json`，
 启动时 `config_path_for()` 指到哪份就用哪份；删掉覆盖配置就是原样。四个数怎么来的都摆在页面上：
 KV 显存 = 常驻单元 × 每单元每层字节 × 层数，每单元每层的字节数出自 `bench/results/2026-09-27-kv-q4/README.md`
@@ -617,11 +643,12 @@ python -m neo.build_exe --dest D:\Work\Strata
 - **exe 里打 pywebview 与它的 WinForms 后端**（spec 里的 `collect_submodules("webview")`：
   pywebview 按平台在运行时挑后端，这些导入 PyInstaller 看不见）和控制台页面 `neo/web/`
   （运行时从解包目录读，`paths.web_dir()`）。
-- **打包环境里没装 pywebview 就拒绝打包**：缺包时 `collect_submodules("webview")` 是空列表，
-  PyInstaller 一声不响地打成功，出来的 exe 没有窗口。实测 2026-10-12 19:58 部署的 exe
-  自己的日志：`pywebview 不可用（No module named 'webview'），退回浏览器界面` —— 用户那边
-  看不到任何界面。`neo/build_exe.py` 现在先查这一关，缺了就报"先装上：
-  `python -m pip install -r neo/requirements-neo.txt`"；确实只要浏览器界面就加 `--no-webview`。
+- **打包环境缺包就拒绝打包，缺的一次报全**（`build_exe.missing_build_deps()`）：缺 pywebview 时
+  `collect_submodules("webview")` 是空列表，PyInstaller 一声不响地打成功，出来的 exe 没有窗口。
+  实测 2026-10-12 19:58 部署的 exe 自己的日志：`pywebview 不可用（No module named 'webview'），退回浏览器界面`
+  —— 用户那边看不到任何界面。以前一关一关拦，在两个包都没装的环境里（部署树的 `.venv` 就是这样）
+  报的那句话里连 pywebview 都不出现，装完 pyinstaller 还要再撞一次；现在一条话里列齐缺的包和各自的装法
+  （`python -m pip install -r neo/requirements-neo.txt`）；确实只要浏览器界面就加 `--no-webview`。
   实测两种打包：装了 pywebview **13.2 MB**（`webview.*` 73 个模块进包，含
   `webview.platforms.edgechromium` 与 `winforms`），没装 **8.8 MB**。
 - **页面脚本体检不过就拒绝出包**（`build_exe.web_gate()` → `neo/webcheck.py`）：页面是这个 exe
@@ -647,6 +674,25 @@ python -m neo.build_exe --dest D:\Work\Strata
   两个进程都会退；在任务管理器里结束，请把两个 `NeoStrata.exe` 都结束。
 - 打包产物（`NeoStrata.exe`、`neo/dist/`、`neo/build/`）不进仓库（`neo/.gitignore`）。
 
+## 部署树：Neo 不改上游（`D:\Work\Strata`）
+
+部署的那棵树是**上游 Strata 仓库的一个 checkout**（`origin` = `github.com/Niko1221/Strata`；
+2026-10-13 在 v0.1.43 / `7695859a`），不是开发仓库。规矩：
+
+- **不在部署树里提交任何东西**，也不给它的 `origin` 加第二个远端 —— 上游更新要能直接 `git pull`。
+- **Neo 不改上游文件**。Neo 带去的东西全是未跟踪的：`NeoStrata.exe`、`neo/`、`NEO-START.bat`。
+  2026-10-13 撤掉了先前打在 `serve/server.py` 上的本机豁免补丁（旧文件备份在
+  `neo/state/backups/server.py.v0.1.43.neo-patched.bak`，393,602 字节），上游文件恢复原样
+  （391,688 字节）。撤补丁留下的缺口由 Neo 自己补：监控页改走 `/strata/` 只读通道（见"token 管到哪"）。
+- 判据：`git -C D:\Work\Strata status --short` 里**没有已修改的跟踪文件**；
+  `git rev-list --count HEAD..origin/main` 与 `origin/main..HEAD` 是 **33 与 0** —— 拉取是纯快进。
+- **部署 = 换 `NeoStrata.exe` + 同步 `neo/` 的源码与页面**。exe 里打的是开发树的 `neo/`；
+  在部署树里跑源码（`python -m neo.manager`、`python -m neo.models`、跑测试）用的是部署树的 `neo/`，
+  两边都要跟上。2026-10-13 实测踩过这个坑：只同步 `.py`、没同步 `neo/web/`，部署树的源码版页面
+  就还是 `t` / `applyLang` 撞名那个死界面 —— `python -m neo.webcheck` 在部署树当场报出来。
+  同步后部署树 `python -m neo.webcheck` 干净、快套件 326 个测试全过（用它自己的 `.venv`）。
+- 打包中间产物（`neo/build/`、`neo/dist/`）不进部署树。
+
 ## 测试
 
 ```
@@ -658,10 +704,10 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_model_settings
 ```
 
-394 个测试，合起来跑 330.5 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+406 个测试，合起来跑 342.5 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
 不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的模块上，单独量的数：
 `test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、`test_connect_api` 6.7 秒，
-其余十三个模块合起来 7.5 秒（323 个测试，2026-10-13 实测）——
+其余十三个模块合起来 15.6 秒（326 个测试，2026-10-13 实测）——
 日常开发跑那十三个就够（命令见 AGENTS.md）。两处实测改掉的等法（2026-10-13）：
 `neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
 控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
@@ -675,12 +721,17 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器；**真实配置的形状**（扁平 `args`、模型在
   `--native`、上下文在 `--max-context`、没有 `path` 键）、**模型在而引擎 exe 不在要标出来并拒绝启动**、
   没点名时挑一个能启动的配置；**`/metrics` 的四节压成卡片键**（`TestMetricsFlatten` 吃真应答载荷：
-  显存 24028 / 24455 MiB、内存 70.6 / 93.6 GB、`requests` 是 1 不是列表、空闲时不编一个生成速度）。
+  显存 24028 / 24455 MiB、内存 70.6 / 93.6 GB、`requests` 是 1 不是列表、空闲时不编一个生成速度）；
+  **监控页地址走控制台**（`test_pages_monitor_goes_through_the_console`：给了 `console_port` 时
+  `pages["monitor"]` 是 `http://<host>:<console>/strata/#monitor`，没给时直连上游；聊天页永远直连上游）。
 - `test_upstream_api`：Neo 用到的 `serve/server.py` 参数（`--engine/--config/--port/--host/
   --api-key/--gpu`）、`/health` 的字段、`/metrics` 的**四节与里面的键**（`live` / `totals` /
   `hardware` / `hardware_static`，以及 `serve/telemetry.py` 的 `cpu` / `ram_used` / `mem_used`）、
   聊天页与监控页文件、`setup.py` 的 M2 参数、
   上游 `requirements.txt` 未被改动。上游改名时这条测试会先响，而不是等用户的 Neo 起不来。
+  **`test_the_monitor_channel_needs_no_upstream_change` 盯的是反过来的事**：`serve/server.py` 里不许出现
+  本机豁免补丁的标记（`loopback_peer`、`_authorized(self, monitor: bool = False)`、`_authorized(monitor=True)`），
+  而监控页与那些只读端点必须还在 —— 监控页靠 Neo 的 `/strata/` 通道读数据，不靠改上游。
 - `test_console`：状态接口、静态页 no-store、起不来的引擎停在 halted、外站 Origin 与外站 Host 403、
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
@@ -689,8 +740,11 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `?model=` 认 id 也认文件名、没点名用第一个配置、点了名找不到就列清单且**不写盘**、
   `POST` 按 `app.js` 发的那份表单写覆盖配置（`--max-context` 与 `--vision` 成、`--kv-resident` 不成对时
   被删）、越界回 `ok:false` 加说明且**配置字节未动**、`action:"reset"` 删掉覆盖配置且上游那份未动、
-  改了要重启的东西回 `restart_required` 并带 pid。
-- `test_ui`（63 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+  改了要重启的东西回 `restart_required` 并带 pid；**`/strata/` 只读通道那组**（`TestStrataChannel`，9 个，
+  用一台假上游）：页面与它的 js/css 都转得到、面板端点靠 Neo 在服务端附的 key 答上且应答里不带 key、
+  查询串原样带过去、`POST` 一律 405、`/v1/chat/completions` 不转、白名单外的路径不转、上游没起来回 502、
+  `/strata` 不遮 Neo 自己的 `/neo/*`、通道用的路径常量与 `engines/base.py` 给的监控页地址一致。
+- `test_ui`（65 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
@@ -699,8 +753,9 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `render`/`poll`/`ensureFrame`/`num`/`count` 在顶层、末尾的 `poll();` 与 `setInterval(poll, 2000);`
   在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**状态页六张卡片只经过
   `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
-  **打包环境缺 pywebview 时
-  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`；
+  **打包环境缺包时
+  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`，
+  两个包都缺时一句话列齐（`test_build_names_every_missing_dep_at_once` —— 部署树的 `.venv` 就是这种环境）；
   **语言与主题那一组**（`TestLanguageAndTheme`，9 个）：`i18n.js` 语法配平、`BLOCKS`/`PHRASES`/`ATTRS`
   齐且 `applyLang`/`applyTheme`/`init` 在顶层、`index.html` 里每一个 `data-i18n` 键在 `BLOCKS` 里
   （漏一个键那块文字就永远不换）、`data-i18n` 不包着控件（包着就把下拉框与按钮抹了）、

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from neo.engines import make_adapter                           # noqa: E402
-from neo.engines.base import EngineAdapter, flatten_metrics, metric_num      # noqa: E402
+from neo.engines.base import EngineAdapter, STRATA_MONITOR_PATH, flatten_metrics, metric_num      # noqa: E402
 from neo.engines.strata import list_configs                    # noqa: E402
 
 
@@ -189,6 +189,25 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(pages["chat"], "http://127.0.0.1:8080/")
         # 实测 2026-10-12 在跑着的服务上：/monitor.html 是 404，监控页是聊天页的 #monitor 标签
         self.assertEqual(pages["monitor"], "http://127.0.0.1:8080/#monitor")
+
+    def test_pages_monitor_goes_through_the_console(self):
+        """监控页走 Neo 的只读通道，聊天页照旧直连。
+
+        上游的面板端点在设了 API key 之后要 key，内嵌的上游页面没有地方填 key（它的 key
+        存在自己的 localStorage 里），设了 token 之后卡片整页空掉。Neo 不改上游一个字节，
+        由 Neo 代发并附上它自己的 key（neo/console_server.py 的 /strata/）。
+        聊天页要 POST 才能发消息，Neo 不替页面花用户的 token，所以它继续直连 8080。
+        """
+        pages = self.adapter.pages(8080, "127.0.0.1", 8083)
+        self.assertEqual(pages["chat"], "http://127.0.0.1:8080/", "聊天页不借 Neo 的 key")
+        self.assertEqual(pages["monitor"], "http://127.0.0.1:8083/strata/#monitor")
+        self.assertEqual(pages["monitor"], f"http://127.0.0.1:8083{STRATA_MONITOR_PATH}")
+        # 绑 0.0.0.0 时页面地址写本机，不把 0.0.0.0 写进浏览器地址栏
+        self.assertEqual(self.adapter.pages(8080, "0.0.0.0", 8083)["monitor"],
+                         "http://127.0.0.1:8083/strata/#monitor")
+        # 没有控制台端口（CLI 起的裸服务）时退回直连，行为与改动前一致
+        self.assertEqual(self.adapter.pages(8080, "127.0.0.1", None)["monitor"],
+                         "http://127.0.0.1:8080/#monitor")
 
     def test_mock_adapter(self):
         plan = make_adapter("mock", ROOT).plan(8095)

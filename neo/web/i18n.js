@@ -302,7 +302,6 @@ Object.assign(ATTRS, {
 Object.assign(BLOCKS, {
   'nav.status': 'Status',
   'nav.models': 'Models',
-  'nav.modelset': 'Model settings',
   'nav.chat': 'Chat',
   'nav.monitor': 'Monitor',
   'nav.logs': 'Logs',

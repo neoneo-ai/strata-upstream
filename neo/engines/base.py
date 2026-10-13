@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 USER_AGENT = "NeoStrata/0.1"
+#: 监控页走 Neo 的只读通道时的路径尾巴：控制台端口上的 /strata/ 转发到上游，
+#: "#monitor" 是上游聊天页认的那个标签（serve/web/app.js 的 showTab）。
+#: Neo 侧的转发在 neo/console_server.py 的 STRATA_PATH，两边由
+#: neo/tests/test_console.py::TestStrataChannel 钉在一起。
+STRATA_MONITOR_PATH = "/strata/#monitor"
 
 
 @dataclass
@@ -218,7 +223,7 @@ class EngineAdapter:
         return ""
 
     # ---- 页面 ----
-    def pages(self, port: int, host: str = "127.0.0.1") -> dict:
+    def pages(self, port: int, host: str = "127.0.0.1", console_port: int | None = None) -> dict:
         """Strata 自己的两个页面：聊天页和监控页。
 
         实测 2026-10-12 在跑着的服务上（8080）：/monitor.html 回 404 —— 上游只在
@@ -226,9 +231,19 @@ class EngineAdapter:
         的一个标签，地址是 http://127.0.0.1:8080/#monitor（serve/web/app.js 的
         showTab 认这个 hash）。Neo 的监控页内嵌的就是这个地址，写 /monitor.html
         时内嵌框是空的（用户看到的"监控是空白页"）。
+
+        给了 console_port 时监控页改走 Neo 的只读通道（neo/console_server.py 的
+        /strata/）：上游的面板端点在设了 API key 之后要 key，而内嵌的上游页面没有地方
+        填 key（它的 key 存在自己的 localStorage 里），设了 token 之后卡片整页空掉、
+        右上角写 "API key needed"。走 Neo 那条通道由 Neo 附上它自己的 key，页面看不见 key，
+        Neo 也不改上游一个字节。聊天页照旧直连 8080 —— 发消息是 POST，Neo 不替页面
+        花用户的 token（要聊天就页面自己填 key）。
         """
         here = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-        return {"chat": f"http://{here}:{port}/", "monitor": f"http://{here}:{port}/#monitor"}
+        monitor = f"http://{here}:{port}/#monitor"
+        if console_port:
+            monitor = f"http://{here}:{int(console_port)}{STRATA_MONITOR_PATH}"
+        return {"chat": f"http://{here}:{port}/", "monitor": monitor}
 
     # ---- 能力 ----
     def capabilities(self) -> dict:

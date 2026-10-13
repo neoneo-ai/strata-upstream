@@ -9,11 +9,14 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -22,7 +25,7 @@ from neo import model_settings                                   # noqa: E402
 from neo import state                                          # noqa: E402
 from neo import console_server as cs                          # noqa: E402
 from neo.console_server import ConsoleServer                   # noqa: E402
-from neo.engines.base import EngineAdapter                     # noqa: E402
+from neo.engines.base import EngineAdapter, STRATA_MONITOR_PATH   # noqa: E402
 from neo.supervisor import HALTED, Supervisor                  # noqa: E402
 
 from neo.tests.test_supervisor import free_port                # noqa: E402
@@ -416,6 +419,165 @@ class TestModelSettingsEndpoint(unittest.TestCase):
         data = json.loads(body)
         self.assertFalse(data["ok"])
         self.assertIn("没有这个模型", data["notes"][0])
+
+
+class FakeStrataHandler(BaseHTTPRequestHandler):
+    """假上游：面板端点要 Bearer key，静态页照发，写与推理只认 POST。
+
+    它把 Neo 转发过来的 path 与 authorization 头记在 seen 里，好证明
+    "key 是 Neo 附的、页面看不见"和"写与推理 Neo 根本没替页面发"。
+    """
+    key = "sk-neo-test-0123456789"
+    seen: list = []
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, code: int, ctype: str, body: bytes) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, code: int, data) -> None:
+        self._send(code, "application/json; charset=utf-8",
+                   json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        auth = self.headers.get("authorization", "")
+        FakeStrataHandler.seen.append((self.path, auth))
+        if path in ("/metrics", "/status", "/config", "/settings", "/mcp",
+                    "/api/requests", "/v1/status"):
+            if auth != "Bearer " + FakeStrataHandler.key:
+                self._json(401, {"error": {"message": "missing or wrong API key"}})
+                return
+            self._json(200, {"live": {"running": True}, "totals": {"requests": 3}})
+        elif path == "/web/app.js":
+            self._send(200, "text/javascript; charset=utf-8", b"// upstream app.js\n")
+        elif path in ("/", ""):
+            self._send(200, "text/html; charset=utf-8", b"<html><body>Strata monitor</body></html>")
+        else:
+            self._json(404, {"error": {"message": "not found"}})
+
+    def do_POST(self):
+        FakeStrataHandler.seen.append((self.path, self.headers.get("authorization", "")))
+        self._json(200, {"ok": True})
+
+
+class TestStrataChannel(unittest.TestCase):
+    """内嵌的上游监控页借 Neo 走的那条只读通道（neo/console_server.py 的 /strata/）。
+
+    为什么要有：上游的面板端点在设了 API key 之后要 key，内嵌的上游页面没有地方填 key
+    （它的 key 存在自己的 localStorage 里），设了 token 之后监控卡片整页空掉。
+    这条通道是 Neo 对上游的全部依赖 —— 上游一个字节的改动都没有。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.up = free_port()
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", cls.up), FakeStrataHandler)
+        cls.thread = threading.Thread(target=lambda: cls.httpd.serve_forever(poll_interval=0.05),
+                                      daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        FakeStrataHandler.seen = []
+        self.sup = Supervisor(FakeAdapter(ROOT), self.up, api_key=FakeStrataHandler.key)
+        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
+        self.url = self.console.start()
+        self.sup.console_port = self.console.port
+
+    def tearDown(self):
+        self.console.stop()
+
+    def get(self, path):
+        return req(self.url.rstrip("/") + path)
+
+    def post(self, path, body=None):
+        return req(self.url.rstrip("/") + path, method="POST", body=body or {})
+
+    def test_page_and_assets_pass_through(self):
+        code, headers, body = self.get("/strata/")
+        self.assertEqual(code, 200)
+        self.assertIn("text/html", headers.get("content-type", ""))
+        self.assertIn("Strata monitor", body)
+        code, headers, body = self.get("/strata/web/app.js")
+        self.assertEqual(code, 200)
+        self.assertIn("text/javascript", headers.get("content-type", ""))
+        self.assertIn("upstream app.js", body)
+
+    def test_panel_endpoints_answer_with_neos_key(self):
+        """设了 token 之后上游要 key：Neo 附上它自己的那把，页面看不见。"""
+        code, _h, body = self.get("/strata/metrics")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["totals"]["requests"], 3)
+        path, auth = FakeStrataHandler.seen[-1]
+        self.assertEqual(path, "/metrics")
+        self.assertEqual(auth, "Bearer " + FakeStrataHandler.key, "key 要由 Neo 附上")
+        self.assertNotIn(FakeStrataHandler.key, body, "应答里不能带 key")
+
+    def test_query_string_survives(self):
+        code, _h, _b = self.get("/strata/metrics?requests=all")
+        self.assertEqual(code, 200)
+        self.assertEqual(FakeStrataHandler.seen[-1][0], "/metrics?requests=all")
+
+
+    def test_writes_are_not_forwarded(self):
+        code, _h, body = self.post("/strata/settings", {"shared": True})
+        self.assertEqual(code, 405)
+        self.assertIn("不外借", json.loads(body)["error"])
+        self.assertEqual(FakeStrataHandler.seen, [], "Neo 没替页面写上游")
+
+    def test_inference_is_not_forwarded(self):
+        code, _h, _b = self.get("/strata/v1/chat/completions")
+        self.assertEqual(code, 405)
+        self.assertEqual(FakeStrataHandler.seen, [], "推理不转：不替页面花用户的 token")
+
+    def test_paths_outside_the_menu_are_refused(self):
+        for path in ("/strata/shutdown", "/strata/../neo/status", "/strata/web/../../etc/passwd"):
+            code, _h, _b = self.get(path)
+            self.assertIn(code, (404, 405), path)
+
+    def test_upstream_down_is_502(self):
+        """上游没在跑：转发回 502，控制台不能因为转发挂住。"""
+        dead = Supervisor(FakeAdapter(ROOT), free_port())
+        other = ConsoleServer(dead, host="127.0.0.1", port=free_port())
+        url = other.start()
+        try:
+            code, _h, body = req(url.rstrip("/") + "/strata/metrics")
+            self.assertEqual(code, 502)
+            self.assertIn("上游没答", json.loads(body)["error"])
+        finally:
+            other.stop()
+
+    def test_neo_routes_are_not_shadowed(self):
+        """/strata 这条前缀不挡 Neo 自己的路由，状态页给的监控地址走这条通道。"""
+        code, _h, body = self.get("/")
+        self.assertEqual(code, 200)
+        self.assertIn("Neo Strata", body)
+        code, _h, body = self.get("/neo/status")
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertEqual(data["pages"]["monitor"],
+                         f"http://127.0.0.1:{self.console.port}{STRATA_MONITOR_PATH}")
+        self.assertEqual(data["pages"]["chat"], f"http://127.0.0.1:{self.up}/")
+
+    def test_channel_path_matches_the_pages_helper(self):
+        """pages() 拼的那个路径必须真在这条通道的白名单里（两处常量不能各说各话）。
+
+        归一化与 Handler._strata 一致：/strata 与 /strata/ 都算上游的根，写作 ""。
+        """
+        self.assertTrue(STRATA_MONITOR_PATH.startswith(cs.STRATA_PATH + "/"))
+        rest = STRATA_MONITOR_PATH[len(cs.STRATA_PATH):].split("#")[0]
+        tail = rest if rest.startswith("/") else "/" + rest
+        self.assertIn("" if tail == "/" else tail, cs.STRATA_READ_PATHS)
 
 
 if __name__ == "__main__":

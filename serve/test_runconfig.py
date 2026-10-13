@@ -14,7 +14,6 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest import mock
 
 from serve import runconfig
 from serve.frontend import ChatTemplate
@@ -142,9 +141,7 @@ class Http(unittest.TestCase):
 
     def test_the_api_key(self):
         self.svc.api_key = "secret"
-        self.assertEqual(self.call("GET")[0], 200)      # this PC reads the run config: the Settings view is the user's
-        with mock.patch("serve.server.loopback_peer", lambda addr: False):
-            self.assertEqual(self.call("GET")[0], 401)  # from another machine the key decides, as for /v1/*
+        self.assertEqual(self.call("GET")[0], 401)
         self.assertEqual(self.call("POST", {"set": {"fit_max_tokens": True}})[0], 401)
         with contextlib.redirect_stdout(io.StringIO()):
             status, _ = self.call("POST", {"set": {"fit_max_tokens": True}}, {"Authorization": "Bearer secret"})

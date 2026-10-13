@@ -188,44 +188,6 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertNotIn("refused", log)
 
-    # --- the API key's scope: the Monitor's reads from this PC, everything else by the key
-    def test_monitor_reads_from_this_pc_need_no_key(self):
-        """The panel on this machine is the user's own: with a key set, the Monitor page still shows data."""
-        self.start(api_key="s3cret")
-        for path in ("/metrics", "/metrics/prometheus", "/status", "/slots", "/props", "/settings", "/mcp",
-                     "/v1/status", "/health"):
-            self.assertEqual(self.req("GET", path)[0], 200, path)
-        self.assertEqual(self.req("GET", "/metrics?requests=all")[0], 200)
-
-    def test_inference_always_needs_the_key(self):
-        """The key's job is the model: every POST to it, and the model list, answer to the key alone."""
-        self.start(api_key="s3cret")
-        self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
-                                  {"Content-Type": "application/json"})[0], 401)
-        self.assertEqual(self.req("GET", "/v1/models")[0], 401)
-        self.assertEqual(self.req("POST", "/settings", {"defaults": {}}, {"Content-Type": "application/json"})[0], 401)
-        self.assertEqual(self.req("POST", "/load", b"{}", {"Content-Type": "application/json"})[0], 401)
-        self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
-                                  {"Content-Type": "application/json", "Authorization": "Bearer s3cret"})[0], 200)
-
-    def test_monitor_reads_from_another_machine_need_the_key(self):
-        """Bound to 0.0.0.0, the LAN reads monitoring only with the key: /status and /api/requests carry the
-        end of the last answer (#212), so they stay the key's."""
-        self.start(api_key="s3cret")
-        with mock.patch("serve.server.loopback_peer", lambda addr: False):
-            for path in ("/metrics", "/status", "/slots", "/props", "/settings", "/mcp", "/v1/status"):
-                self.assertEqual(self.req("GET", path)[0], 401, path)
-            self.assertEqual(self.req("GET", "/metrics", None, {"Authorization": "Bearer s3cret"})[0], 200)
-            self.assertEqual(self.req("GET", "/health")[0], 200)      # /health says "api_key": true, and nothing else
-
-    def test_a_rebinding_page_gets_the_key_s_401_not_the_dashboard(self):
-        """With a key the Host check in parse_request is off, so the exemption asks for it again: a page whose
-        own name its DNS points at 127.0.0.1 is a loopback peer, and must not read the panel."""
-        self.start(api_key="s3cret")
-        for path in ("/metrics", "/status", "/slots", "/settings"):
-            self.assertEqual(self.req("GET", path, host=f"evil.example.com:{self.port}")[0], 401, path)
-        self.assertEqual(self.req("GET", "/metrics", host=f"127.0.0.1:{self.port}")[0], 200)
-
     def test_a_trusted_origin_s_host_is_allowed(self):
         self.start(trusted_origins=["https://strata.example.com"])
         self.assertEqual(self.req("GET", "/status", host="strata.example.com")[0], 200)

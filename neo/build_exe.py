@@ -35,6 +35,32 @@ def pywebview_available() -> bool:
     return importlib.util.find_spec("webview") is not None
 
 
+def missing_build_deps(allow_no_webview: bool = False) -> list[str]:
+    """打包环境缺哪些包，一次问全。
+
+    以前是一关一关拦：先报 pyinstaller，装完再报 pywebview。实测在两个都没装的
+    环境里（部署树的 .venv 就是这样），用户要撞两次坑才知道装齐。
+    """
+    missing = []
+    if not pyinstaller_available():
+        missing.append("pyinstaller")
+    if not pywebview_available() and not allow_no_webview:
+        missing.append("pywebview")
+    return missing
+
+
+def missing_build_deps_note(missing: list[str]) -> str:
+    """缺包时给的那段话：每个包一行的装法，装完直接能跑同一条命令。"""
+    lines = [f"打包要装的包还缺：{'、'.join(missing)}"]
+    if "pyinstaller" in missing:
+        lines.append("  pyinstaller：python -m pip install pyinstaller")
+    if "pywebview" in missing:
+        lines.append("  pywebview：缺了它打出来的 exe 没有窗口，双击只会开一个浏览器页。")
+        lines.append("      先装上：python -m pip install -r neo/requirements-neo.txt")
+        lines.append("      确实只要浏览器界面（不要原生窗口）就加 --no-webview 再来一次。")
+    return "\n".join(lines)
+
+
 def web_gate(root: Path) -> None:
     """页面脚本体检：不干净就拒绝打包。
 
@@ -62,15 +88,13 @@ def build(dest: str | Path = "", quiet: bool = False, allow_no_webview: bool = F
     缺包时是空列表，PyInstaller 一声不响地打成功，出来的 exe 起来就退回浏览器界面 ——
     用户看不到任何窗口。实测 2026-10-12 19:58 部署的 NeoStrata.exe 自己的日志：
     "pywebview 不可用（No module named 'webview'），退回浏览器界面"。
+    缺的包一次报全（missing_build_deps），不是一关一关拦。
     """
     neo_dir = safe_resolve(Path(__file__).parent)
     root = neo_dir.parent
-    if not pyinstaller_available():
-        raise SystemExit("打包要 pyinstaller：python -m pip install pyinstaller")
-    if not pywebview_available() and not allow_no_webview:
-        raise SystemExit("打包要 pywebview：缺了它打出来的 exe 没有窗口，双击只会开一个浏览器页。\n"
-                         "先装上：python -m pip install -r neo/requirements-neo.txt\n"
-                         "确实只要浏览器界面（不要原生窗口）就加 --no-webview 再来一次。")
+    missing = missing_build_deps(allow_no_webview)
+    if missing:
+        raise SystemExit(missing_build_deps_note(missing))
     web_gate(root)
 
     dist = neo_dir / "dist"

@@ -69,6 +69,29 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 #: 远程加载那一行里的 token 占位符：完整 key 从不进页面（明文只走 /neo/token 的本机请求）
 KEY_PLACEHOLDER = "sk-neo-…（点「取 token」换上真的那把）"
 
+#: 内嵌的上游监控页借 Neo 走的那条**只读**通道：GET /strata/<上游路径>。
+#:
+#: 为什么要有这条：上游的面板端点（/metrics、/status、/config…）在设了 API key 之后要
+#: key，而内嵌的上游页面没有地方填 key（它的 key 存在自己的 localStorage 里，要用户在
+#: About > Settings 手填），于是设了 token 之后监控卡片整页空掉、右上角写 "API key needed"。
+#: Neo 不改上游任何文件 —— 这条通道是全部依赖：页面由 Neo 代发、key 由 Neo 附上，
+#: 页面看不见 key，写操作和推理端点不转（借出去就是替页面花用户的 token）。
+#:
+#: 为什么一条前缀就够：上游页面（serve/web/index.html 与 serve/web/app.js）的资源和数据
+#: 请求**全用相对路径**，所以文档挂在 /strata/ 下之后，页面、它的 /web/* 资源、它的
+#: metrics/config 请求会全部落进 /strata/ 这一条前缀，与 Neo 自己的路由（/、/app.js、
+#: /neo/*）一个都不撞，也不需要改写上游的 HTML。
+STRATA_PATH = "/strata"
+#: 上游页面会读的那些只读端点（serve/server.py 的 do_GET 分支；写的一律不在这里）
+STRATA_READ_PATHS = frozenset(("", "/api-monitor", "/health", "/metrics", "/metrics/prometheus",
+                               "/status", "/slots", "/props", "/config", "/settings", "/mcp",
+                               "/api/requests", "/models", "/v1/models", "/v1/status"))
+#: 上游页面自己的资源都在 /web/ 与 /fonts/ 下（serve/web/），整段前缀可转
+STRATA_READ_PREFIXES = ("/web/", "/fonts/", "/slots/")
+#: 应答上限与超时：监控页每 2 秒轮询一次，卡住的转发不能把控制台线程挂住
+STRATA_MAX_BYTES = 8_000_000
+STRATA_TIMEOUT_S = 5.0
+
 
 def _query_value(path: str, key: str) -> str:
     """查询串里的那个值（?model=… / ?what=…）。没有回空串。"""
@@ -190,6 +213,56 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    # ---------------- 上游页面的只读通道 ----------------
+    def _strata(self) -> None:
+        """GET /strata/<上游路径> → 上游那个路径。key 是 Neo 的，页面看不见。
+
+        只转 GET/HEAD；白名单外的（含 /v1/chat/completions、/load、/unload、/slots/<id>/…）
+        一律 405。上游没在跑回 502，控制台不能因为转发挂住。
+        """
+        parts = urlsplit(self.path)
+        rest = unquote(parts.path)[len(STRATA_PATH):]
+        target = rest if rest.startswith("/") else "/" + rest
+        if target == "/":                      # /strata 与 /strata/ 都是上游的根（聊天页）
+            target = ""
+        if target not in STRATA_READ_PATHS and not target.startswith(STRATA_READ_PREFIXES):
+            self._json(405, {"error": f"Neo 只把上游的页面和面板端点转给页面，{target} 不转"})
+            return
+        port = getattr(self.server.supervisor, "port", None)
+        if not port:
+            self._json(503, {"error": "Neo 不知道上游服务在哪个端口"})
+            return
+        url = f"http://127.0.0.1:{int(port)}{target}"
+        if parts.query:
+            url += "?" + parts.query
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "NeoStrata/0.1")
+        key = str(getattr(self.server.supervisor, "api_key", "") or "")
+        if key:
+            req.add_header("Authorization", "Bearer " + key)
+        try:
+            with urllib.request.urlopen(req, timeout=STRATA_TIMEOUT_S) as resp:
+                code = resp.getcode()
+                ctype = resp.headers.get("content-type") or "application/octet-stream"
+                body = resp.read(STRATA_MAX_BYTES + 1)
+        except urllib.error.HTTPError as e:            # 上游自己回的 4xx/5xx 原样转给页面
+            code = e.code
+            ctype = (e.headers.get("content-type") if e.headers else None) or "application/json"
+            body = e.read(STRATA_MAX_BYTES + 1)
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            self._json(502, {"error": f"上游没答：{getattr(e, 'reason', e)}"})
+            return
+        if len(body) > STRATA_MAX_BYTES:
+            self._json(502, {"error": f"上游这个应答超过 {STRATA_MAX_BYTES} 字节，不转"})
+            return
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     # ---------------- 路由 ----------------
     def do_GET(self):
         path = unquote(urlsplit(self.path).path)
@@ -238,6 +311,8 @@ class Handler(BaseHTTPRequestHandler):
                 _query_value(self.path, "model")))
         elif path == "/neo/remote":
             self._json(200, self.server.remote_info())
+        elif path == STRATA_PATH or path.startswith(STRATA_PATH + "/"):
+            self._strata()
         else:
             self._json(404, {"error": "not found"})
 
@@ -251,6 +326,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         sup = self.server.supervisor
         body = self._body()
+        if path == STRATA_PATH or path.startswith(STRATA_PATH + "/"):
+            self._json(405, {"error": "Neo 不把写操作转给上游：要写上游请页面用它自己的 key"
+                              "（上游页面 About > Settings 里填），Neo 的 token 不外借"})
+            return
         if path == "/neo/start":
             self._json(200, sup.start(model_id=body.get("model")))
         elif path == "/neo/stop":

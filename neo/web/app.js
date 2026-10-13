@@ -96,8 +96,7 @@ function showPage(name) {
   if (name === "monitor") ensureFrame("monitor");
   if (name === "logs") loadLog();
   if (name === "models") { loadModels(); loadCatalog(); loadUpstream(); loadRemote(); }
-  if (name === "modelset") loadModelSettings();
-  if (name === "settings") loadConfig();
+  if (name === "settings") { loadConfig(); loadModelSettings(); }
   if (name === "connect") loadConnect();
 }
 document.querySelectorAll(".tab").forEach((tab) => tab.onclick = () => showPage(tab.dataset.page));
@@ -726,7 +725,7 @@ $("rm-copy").onclick = async () => {
   btn.textContent = ok ? t("这一行已复制") : t("复制失败");
   setTimeout(() => { btn.textContent = t("复制这一行"); }, 4000);
 };
-// ---------------- 模型设置页（上下文 / KV / 图片 / 显存保留）----------------
+// ---------------- 设置页里的模型设置块（上下文 / KV / 图片 / 显存保留）----------------
 // 四栏都是引擎本来就认的参数。Neo 不改 serve/server.py，也不改 setup.py 写的那份
 // strata-*.json：改动写进 neo/state/configs/ 的一份覆盖配置，启动时 --config 指到它。
 let msData = null;

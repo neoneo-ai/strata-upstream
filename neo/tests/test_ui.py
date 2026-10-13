@@ -446,6 +446,21 @@ class TestBuildNeedsPywebview(unittest.TestCase):
             self.build_exe.build(quiet=True, allow_no_webview=True)
         self.assertIn("pyinstaller", str(got.exception))
 
+    def test_build_names_every_missing_dep_at_once(self):
+        """两个包都缺时一次说全。
+
+        部署树的 .venv 就是这种环境（pyinstaller 与 pywebview 都没装）：一关一关拦的话，
+        那句话里连 pywebview 都不出现，装完 pyinstaller 的人还得再撞一次。
+        """
+        self.build_exe.pywebview_available = lambda: False
+        self.build_exe.pyinstaller_available = lambda: False
+        with self.assertRaises(SystemExit) as got:
+            self.build_exe.build(quiet=True)
+        note = str(got.exception)
+        self.assertIn("pyinstaller", note)
+        self.assertIn("pywebview", note)
+        self.assertIn("requirements-neo.txt", note)
+
     def test_cli_flag_reaches_build(self):
         """--no-webview 要真的传到 build(allow_no_webview=True)，默认是拦住的。"""
         seen = []
@@ -683,10 +698,30 @@ class TestLanguageAndTheme(unittest.TestCase):
             self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
         self.assertIn('ms_get: ["GET", "/neo/model/settings"]', self.js)
         self.assertIn('ms_set: ["POST", "/neo/model/settings"]', self.js)
-        self.assertIn('if (name === "modelset") loadModelSettings();', self.js)
+        self.assertIn('if (name === "settings") { loadConfig(); loadModelSettings(); }', self.js)
         self.assertIn('action: "reset"', self.js)
         server = self.server
         self.assertIn('"/neo/model/settings"', server.replace("'", '"'))
+
+    def test_model_settings_lives_inside_the_settings_page(self):
+        """模型设置不再是独立页签，整块并进「设置」页（2026-10-13 的要求）。
+
+        页签少一个，`showPage` 里就不许再有 "modelset" 那条分支；控件 id 一个都不动，
+        `app.js` 与 `neo/tests/test_console.py` 的那 10 个接口测试照原样跑。
+        """
+        self.assertNotIn('data-page="modelset"', self.html)
+        self.assertNotIn('id="page-modelset"', self.html)
+        self.assertNotIn('"modelset"', self.js)
+        self.assertEqual(self.html.count('id="page-settings"'), 1,
+                         "「设置」页只剩一个 section")
+        section = re.search(r'<section id="page-settings".*?</section>', self.html, re.S)
+        self.assertIsNotNone(section, "index.html 里没有 page-settings")
+        body = section.group(0)
+        for needle in ('data-i18n="panel.modelset"', 'data-i18n="panel.settings"'):
+            self.assertIn(needle, body, f"「{needle}」不在设置页里")
+        for ident in ("ms-model", "ms-context", "ms-save", "ms-reset", "ms-est",
+                      "set-port", "set-host", "set-key", "set-save"):
+            self.assertIn(f'id="{ident}"', body, f"「{ident}」不在设置页里")
 
     def test_the_upstream_and_remote_panels_are_wired(self):
         for ident in ("up-list", "up-note", "up-reload", "up-open",

@@ -29,7 +29,8 @@ pages). It talks to Strata only through existing CLI flags, env vars and HTTP en
 under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules, the single-instance rules and
 its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one windowed `NeoStrata.exe` with
 `python -m neo.build_exe` (spec `neo/NeoStrata.spec`), with pywebview installed in the build env - the build refuses
-without it, because the exe would silently lose its window and open only a browser page, and it refuses when
+when a build package is missing and names every missing one in one message (pywebview included, because the exe
+would silently lose its window and open only a browser page), and it refuses when
 `neo/webcheck.py` reports a page script that would not run in the browser (two `<script>` tags share one global
 scope, so a top-level name declared in both files means the later file never executes - the window opens and every
 click is dead); the exe is meant to sit in a
@@ -39,16 +40,32 @@ neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
 neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings`
-(394 tests, 330.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
+(406 tests, 342.5 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
 329-test run). The modules that start real processes are the whole cost - measured on their own: `test_supervisor`
 56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
-the other thirteen together are 7.5 s. For a quick pass while developing, run those thirteen and leave the three out:
+the other thirteen together are 15.6 s. For a quick pass while developing, run those thirteen and leave the three out:
 `python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
-neo.tests.test_logging neo.tests.test_model_settings` (7.5 s, 323 tests). `python -m neo.webcheck` checks the page
+neo.tests.test_logging neo.tests.test_model_settings` (15.6 s, 326 tests). `python -m neo.webcheck` checks the page
 scripts (the two `<script>` files as one program) in about a second, and `build_exe` runs it before packaging.
 Neo's own packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
+
+The deployed tree (`D:\Work\Strata`) is an upstream Strata checkout, not the dev repo: never commit there and never
+add a second remote to its `origin`, so upstream updates stay a plain `git pull` (measured 2026-10-13: 33 commits
+behind, 0 ahead, no modified tracked files). Neo's files there are untracked - `NeoStrata.exe`, `neo/`,
+`NEO-START.bat`. Deploying means replacing the exe **and** syncing `neo/` source **and** `neo/web/`: a `.py`-only
+sync once left the deployed source-tree page on the dead `t` / `applyLang` build, and `python -m neo.webcheck` run in
+that tree reported it. Build artifacts (`neo/build/`, `neo/dist/`) do not go into the deployed tree.
+
+The embedded monitor page reads Strata through Neo, never through a patched upstream: `neo/console_server.py` proxies
+the upstream page, its assets and its read-only panel endpoints under `/strata/` from the console port - GET and HEAD
+only, a fixed path menu, `POST` refused with 405, inference routes not forwarded, 502 when the upstream is down, 8 MB
+and 5 s caps. Neo attaches its own API key server-side, so the page never sees the key. `engines/base.py`'s `pages()`
+returns `http://127.0.0.1:<console>/strata/#monitor` and keeps the chat page direct to the upstream port (chat needs
+`POST`; Neo does not spend the user's token on its behalf). `serve/server.py` carries no Neo patch - the loopback
+exemption patch was reverted 2026-10-13 - and `neo/tests/test_upstream_api.py` asserts the patch markers stay absent
+while the monitor page and those read endpoints stay present.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source,

@@ -4,6 +4,9 @@ Neo 不改上游，全靠上游已有的 CLI 与端点。上游改了名字，�
 而不是等用户的 Neo 起不来。
 模型页"下载源"那一排用的也是上游本来就有的口子（`--source` 的可选值与 `HF_ENDPOINT`），
 上游收掉这两个口子时这条测试先响（TestSetupCli 里的 test_the_download_source_knobs_neo_switches_still_exist）。
+内嵌的监控页要读的那些端点也一样：Neo 在控制台上开一条只读通道代发（neo/console_server.py
+的 /strata/），上游保持原样，所以 TestServerApi 里既钉住"上游没有 Neo 需要的改动"，
+也钉住"上游那个页面和它读的端点还在"。
 """
 from __future__ import annotations
 
@@ -41,18 +44,28 @@ class TestServerApi(unittest.TestCase):
     def test_metrics_endpoint_exists(self):
         self.assertIn('path == "/metrics"', self.src)
 
-    def test_the_monitor_reads_answer_to_this_pc_without_the_key(self):
-        """Neo 的监控页是内嵌的上游页面，key 只存在它自己的 localStorage 里（About > Settings 手填）。
-        设了 token 之后 `/metrics` 必须对**本机来的**读取直接答，否则面板全是"—"、右上角写
-        "API key needed" —— 2026-10-13 就是这样空掉的。上游把这条收回去时，这条先响。
+    def test_the_monitor_channel_needs_no_upstream_change(self):
+        """Neo 的监控页靠 Neo 自己的只读通道（neo/console_server.py 的 /strata/），不靠上游改动。
+
+        这条钉两件事：上游保持原样（Neo 不改它一个字节），且上游那个页面和它读的那些端点
+        还在 —— 上游收掉 /api-monitor、/web/ 资源或这些端点时，这条先响。
+
+        2026-10-13 走过另一条路：给 serve/server.py 加"本机读面板免 key"，那要动上游一个
+        文件加五个测试文件，上游一更新就得合并 —— 已撤掉，改由 Neo 代发并附上自己的 key。
+        上游那边再出现下面这些标记，说明有人把那条路捡回来了，这条先红。
         """
-        self.assertIn("def loopback_peer(", self.src, "serve/server.py 里没有了 loopback_peer()")
-        self.assertIn("def _authorized(self, monitor: bool = False)", self.src,
-                      "_authorized 不再区分监控读取")
-        block = re.search(r'path == "/metrics".*?self\._json\(200, svc\.metrics', self.src, re.S)
-        self.assertTrue(block, "找不到 /metrics 的 JSON 分支")
-        self.assertIn("self._authorized(monitor=True)", block.group(0),
-                      "本机读 /metrics 又要 key 了：Neo 内嵌的监控页会整页空掉")
+        for needle in ("def loopback_peer(", "_authorized(self, monitor: bool = False)",
+                       "_authorized(monitor=True)"):
+            self.assertNotIn(needle, self.src,
+                             f"serve/server.py 里又出现了 {needle}：Neo 不改上游，"
+                             "监控页靠 neo/console_server.py 的 /strata/ 通道")
+        self.assertIn('path == "/api-monitor"', self.src, "上游的独立监控页（/api-monitor）没了")
+        for prefix in ('"/web/', '"/fonts/'):
+            self.assertIn(prefix, self.src, f"上游页面的资源前缀 {prefix} 没了，内嵌页要白屏")
+        for path in ("/metrics", "/status", "/config", "/settings", "/mcp", "/api/requests",
+                     "/v1/status", "/health", "/props", "/slots"):
+            self.assertIn(f'"{path}"', self.src,
+                          f"serve/server.py 不再认 {path}，Neo 通道的白名单要跟着改")
 
     def test_metrics_sections_neo_flattens_still_exist(self):
         """Neo 的状态页卡片读 /metrics 的这四节（neo/engines/base.py 的 flatten_metrics）。

@@ -234,7 +234,7 @@ class Shell:
         return {"ok": True, "path": path}
 
     def open_page(self, which: str):
-        pages = self.sup.adapter.pages(self.sup.port, self.sup.host)
+        pages = self.sup.adapter.pages(self.sup.port, self.sup.host, self.sup.console_port)
         url = pages.get(str(which), pages["chat"])
         webbrowser.open(url)
         return {"ok": True, "url": url}
@@ -410,6 +410,7 @@ def main(argv=None) -> int:
     shell = Shell(sup, console)
     console.shell = shell                      # 页面里的"打开聊天页/监控页/日志"走这两个接口
     url = console.start()
+    sup.console_port = console.port             # 监控页要靠它走 Neo 的只读通道
     state.record_instance(root=str(root), strata_port=port, console_url=url,
                           mode="window", engine=adapter.name, version=NEO_VERSION)
     atexit.register(state.clear_instance)

@@ -85,6 +85,9 @@ class Supervisor:
         self.probe_s = float(probe_s)
         self.watch_s = float(watch_s)
         self.on_event = on_event
+        #: Neo 控制台的端口，由 neo/manager.py 在 console.start() 之后填。
+        #: 状态页的监控页地址要靠它（走 Neo 的只读通道，见 engines/base.py 的 pages()）。
+        self.console_port: int | None = None
 
         self._lock = threading.RLock()
         self._wake = threading.Event()          # 让退避等待能被"停止"打断
@@ -207,7 +210,7 @@ class Supervisor:
                 "log_path": self._log_path,
                 "started_at": self.started_at,
                 "events": list(self.events)[-40:],
-                "pages": self.adapter.pages(self.port, self.host),
+                "pages": self.adapter.pages(self.port, self.host, self.console_port),
                 "installed": bool(self.adapter.discover()),
                 "ready_timeout_s": (self._plan.ready_timeout_s if self._plan else 0),
             }

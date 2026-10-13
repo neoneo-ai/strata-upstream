@@ -2808,8 +2808,7 @@ class Service:
         self.fifo = threading.Lock()
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
-        self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key); the
-        #                                                Monitor's read-only endpoints answer to this PC without it
+        self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -4825,27 +4824,12 @@ def make_handler(svc: Service):
             self.end_headers()
             self.wfile.write(body)
 
-        def _local_monitor(self) -> bool:
-            """A monitoring read from this PC: the peer address is loopback and the Host is a name this server
-            answers to.  With an API key the Host check in parse_request is off (a rebinding page cannot
-            authenticate), so the exemption asks for it again: a page whose own name its DNS points at
-            127.0.0.1 gets the 401, not the dashboard."""
-            return loopback_peer(self.client_address[0]) and host_allowed(
-                self.headers.get("Host"), svc.host_names, "*" in svc.allowed_hosts)
-
-        def _authorized(self, monitor: bool = False) -> bool:
-            """The API key, when the server has one.  `monitor=True` marks a read-only monitoring endpoint
-            (/metrics, /metrics/prometheus, /status, /slots, /props, /config, /settings, /mcp, /api/requests,
-            /v1/status): from this PC it needs no key, so the Monitor page keeps working after a key is set -
-            the panel on this machine is the user's own.  A key that matches always passes; every other
-            request - any POST, any /v1/*, anything from another machine - is decided by the key alone."""
+        def _authorized(self) -> bool:
             if not svc.api_key:
                 return True
             auth = self.headers.get("Authorization", "")
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
             if key_matches(given, svc.api_key):
-                return True
-            if monitor and self._local_monitor():
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -4886,7 +4870,7 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
                 return
             if path == "/metrics/prometheus":
-                if self._authorized(monitor=True):
+                if self._authorized():
                     body = svc.prometheus().encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -4897,7 +4881,7 @@ def make_handler(svc: Service):
             if path == "/metrics":
                 from serve import prometheus
                 if prometheus.wants_prometheus(self.headers.get("Accept", ""), urlsplit(self.path).query):
-                    if self._authorized(monitor=True):   # a scraper: the text format, vLLM's names (serve/prometheus.py)
+                    if self._authorized():   # a scraper: the text format, vLLM's names (serve/prometheus.py)
                         body = prometheus.render(svc.metrics(), svc.latencies.snapshot()).encode()
                         self.send_response(200)
                         self.send_header("Content-Type", prometheus.CONTENT_TYPE)
@@ -4905,12 +4889,12 @@ def make_handler(svc: Service):
                         self.end_headers()
                         self.wfile.write(body)
                     return
-                if self._authorized(monitor=True):
+                if self._authorized():
                     # the last 12 requests; `?requests=all` every one kept (the Monitor's "Show all", issue #35)
                     self._json(200, svc.metrics(all_requests="requests=all" in self.path))
                 return
             if path == "/api/requests" and svc.api_monitor:
-                if self._authorized(monitor=True):
+                if self._authorized():
                     request_id = parse_qs(urlsplit(self.path).query).get("id", [None])[0]
                     records = svc.request_records(request_id)
                     self._json(404 if records is None else 200,
@@ -4919,16 +4903,16 @@ def make_handler(svc: Service):
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
             if path == "/settings":
-                if self._authorized(monitor=True):
+                if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
                 return
             if path == "/config":                            # #564: the Settings view's keys of the run config
-                if self._authorized(monitor=True):
+                if self._authorized():
                     self._config_get()
                 return
             if path == "/mcp":
                 # the MCP servers, their state and tools (the web app's switch and Monitor card)
-                if self._authorized(monitor=True):
+                if self._authorized():
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
             if path == "" or (path == "/api-monitor" and svc.api_monitor):
@@ -4943,7 +4927,7 @@ def make_handler(svc: Service):
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path == "/status":
-                if not self._authorized(monitor=True):      # #212: it shows the end of the last answer
+                if not self._authorized():                  # #212: it shows the end of the last answer
                     return
                 with svc.status_lock:
                     s = dict(svc.status)
@@ -4971,10 +4955,10 @@ def make_handler(svc: Service):
                     data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
                     self._json(200, {"object": "list", "data": data if loaded else []})
             elif path == "/props":
-                if self._authorized(monitor=True):
+                if self._authorized():
                     self._props()
             elif path == "/slots":
-                if self._authorized(monitor=True):
+                if self._authorized():
                     loaded = not hasattr(svc.engine, "alive") or svc.engine.alive()
                     with svc.status_lock:
                         busy = bool(svc.status.get("busy"))
@@ -4993,7 +4977,7 @@ def make_handler(svc: Service):
                                   "n_prompt_tokens": in_use}]
                     self._json(200, slots if loaded else [])
             elif path == "/v1/status":
-                if self._authorized(monitor=True):
+                if self._authorized():
                     self._json(200, svc.v1_status())
             else:
                 self._json(404, {"error": {"message": "not found"}})
@@ -5833,15 +5817,6 @@ def host_allowed(host, names, any_host=False) -> bool:
     name = host_name(host)
     return bool(name) and (_is_ip(name) or name == "localhost" or name.endswith(".localhost")
                            or _name_in(name, names))
-
-
-def loopback_peer(addr) -> bool:
-    """Is this the peer address of a request that came from this PC (127.x, ::1)?  The address the socket
-    reports, never the Host header - a client writes its own headers, so the header proves nothing."""
-    ip = str(addr or "").strip("[]")
-    if not ip:
-        return False
-    return ip.startswith("127.") or ip.startswith("::ffff:127.") or ip in ("::1", "::ffff:1", "0:0:0:0:0:0:0:1")
 
 
 def key_list(value) -> list[str]:

@@ -124,18 +124,14 @@ class Monitor(unittest.TestCase):
     def test_history_is_authorized_and_does_not_capture_headers(self):
         self.svc.api_key = "secret"
         auth = {"Authorization": "Bearer secret"}
-        # from this PC the Monitor reads the history with no key; from any other machine it needs one
-        with mock.patch("serve.server.loopback_peer", lambda addr: False):
-            self.assertEqual(self.request("/api/requests")[0], 401)
-            self.assertEqual(self.request("/api/requests?id=missing")[0], 401)
+        self.assertEqual(self.request("/api/requests")[0], 401)
+        self.assertEqual(self.request("/api/requests?id=missing")[0], 401)
         self.assertEqual(len(self.svc.api_requests), 0)
         self.assertEqual(self.request("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}, auth)[0], 200)
-        self.assertEqual(self.request("/api/requests")[0], 200)
         summary = self.request("/api/requests", headers=auth)[1]["requests"][0]
         self.assertNotIn("input", summary)
         self.assertNotIn("output", summary)
-        with mock.patch("serve.server.loopback_peer", lambda addr: False):
-            self.assertEqual(self.request("/api/requests?id=" + summary["id"])[0], 401)
+        self.assertEqual(self.request("/api/requests?id=" + summary["id"])[0], 401)
         detail = self.request("/api/requests?id=" + summary["id"], headers=auth)[1]
         self.assertNotIn("secret", json.dumps(detail))
 

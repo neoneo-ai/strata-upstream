@@ -1,4 +1,4 @@
-"""neo/tests/test_supervisor.py - 监督器：启动、就绪、崩溃自动重启、退避、熔断、停止不重启。
+"""neo/tests/test_supervisor.py - 监督器：启动、就绪、崩溃后不自动重启（给诊断）、停止不重启、接手外部服务。
 
 跑的是真实进程（serve/server.py --engine mock），所以这条测试就是 M1 的核心验收。
 """
@@ -16,13 +16,17 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "neo.tests"
 
-from ._bootstrap import ENGINE, REPO                # noqa: E402
+from ._bootstrap import ENGINE, REPO, server_ready              # noqa: E402
 
 ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根（Neo 自己的文件）
 
+#: 引擎的真服务（serve/server.py --engine mock）在这台机器上起得来吗。
+#: 起不来时，用真的 serve/server.py 的那几条跳过并说明原因（原因见 _bootstrap.server_ready）。
+SERVER_OK, SERVER_WHY = server_ready(ENGINE)
+
 from neo import jobobj, state                                          # noqa: E402
 from neo.engines.mock import MockEngine                        # noqa: E402
-from neo.supervisor import (EXTERNAL, HALTED, IDLE, RESTARTING, RUNNING, STARTING,  # noqa: E402
+from neo.supervisor import (EXTERNAL, IDLE, RUNNING, STARTING,          # noqa: E402
                             Supervisor, diagnose)
 
 
@@ -33,7 +37,7 @@ class FastEngine(MockEngine):
     实测 2026-10-13（这台机器，Windows 11，Defender 在扫磁盘）：起
     `serve/server.py --engine mock` 一次约 3.9 秒，起那个 40 行标准库服务一次约 0.3 秒；
     test_supervisor 里 11 次 spawn 就是 43 秒，占这个模块 51 秒里的绝大部分。
-    监督的链路（启动 → 就绪 → 被杀 → 自动重启 → 退避 → 熔断 → 停止不重启）一个字都不少，
+    监督的链路（启动 → 就绪 → 被杀 → 停着并给出诊断 → 点启动再起 → 停止不重启）一个字都不少，
     换的只是"被监督的那个进程里装了什么"。上游真行为（就绪行进日志、/health 的真字段）
     由 test_upstream_api.py 和 TestStartAndReady 里那条用真 serve/server.py 的用例守着。
     """
@@ -104,7 +108,7 @@ def free_port() -> int:
     return port
 
 
-def wait_listening(port: int, timeout: float = 30.0) -> bool:
+def wait_listening(port: int, timeout: float = 15.0) -> bool:
     """等端口上真的在听了，再去监督它。
 
     接手类的测试起的是上游的 serve/server.py。在 Neo 单独的仓库里那一棵树是刚按 pin
@@ -149,9 +153,6 @@ class SupervisorBase(unittest.TestCase):
     def make(self, engine=None, **kw):
         # 轮询间隔按"测试要跑得快"给：状态机每 0.05 秒看一次子进程、每 0.1 秒问一次
         # /health，就绪与崩溃都是立刻能看见的事，等的时间由条件决定（见 wait）。
-        kw.setdefault("backoff", (0.5, 0.8, 1.0))
-        kw.setdefault("window_s", 600.0)
-        kw.setdefault("max_restarts", 3)
         kw.setdefault("poll_s", 0.05)
         kw.setdefault("probe_s", 0.1)
         self.sup = Supervisor((engine or self.engine_cls)(
@@ -167,7 +168,7 @@ class SupervisorBase(unittest.TestCase):
         # shutdown() 自己等子进程退出；这里只留一点时间给 Windows 放掉进程句柄
         time.sleep(0.1)
 
-    def wait(self, pred, timeout=90.0, why=""):
+    def wait(self, pred, timeout=30.0, why=""):
         t0 = time.time()
         while time.time() - t0 < timeout:
             s = self.sup.status()
@@ -181,6 +182,8 @@ class TestStartAndReady(SupervisorBase):
     def test_start_to_running(self):
         # 这一条用真的 serve/server.py --engine mock：要验的就是"上游的就绪行真的进了日志"，
         # 那是 Neo 与上游的接缝，不能由 neo/tests/mock_server.py 替它作证（原因见 FastEngine）。
+        if not SERVER_OK:
+            self.skipTest(SERVER_WHY)
         sup = self.make(engine=MockEngine)
         sup.start()
         s = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="服务就绪")
@@ -226,9 +229,9 @@ class TestStartAndReady(SupervisorBase):
 class TestSetModel(SupervisorBase):
     """模型页的"换过去"：服务在跑时直接换模型，用户不用先按停止。
 
-    `set_model`（neo/supervisor.py:156）就是"记下新模型 + `stop()` + `start()`"。
+    `set_model`（neo/supervisor.py）就是"记下新模型 + `stop()` + `start()`"。
     实测 2026-10-12（mock 真进程）：running 时点它，Neo 自己把服务停掉、用新模型重新起，
-    进程号换了、状态回到 running，而且这一下不算崩溃重启（不占退避、不会推熔断）。
+    进程号换了、状态回到 running，而且这一条走的是用户主动的启动，不记成非预期退出。
     """
 
     def test_set_model_while_running_restarts_on_its_own(self):
@@ -240,16 +243,15 @@ class TestSetModel(SupervisorBase):
         self.assertIn(out["state"], (STARTING, RUNNING), "点下去就进了换模型的流程")
         again = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="换完模型重新就绪")
         self.assertNotEqual(first["pid"], again["pid"], "服务真的换了一个进程")
-        self.assertEqual(again["restart_number"], 0, "用户主动换模型不算崩溃重启")
-        self.assertEqual(again["restarts"], [], "换模型不占退避的次数")
+        self.assertIsNone(again["last_exit"], "用户主动换模型不该被记成一次非预期退出")
 
 
-class TestCrashRestart(SupervisorBase):
-    def make(self, **kw):
-        # 退避表测的是"第 1/2/3 次各退一档"这个顺序，不是退多久：给短档，
-        # 三次重启少等 1.4 秒，断言一个字不改。
-        kw.setdefault("backoff", (0.2, 0.3, 0.4))
-        return super().make(**kw)
+class TestCrashStops(SupervisorBase):
+    """服务非预期退出后 Neo 不自动拉起：记下退出码与一句诊断就停着，要用户点"启动"。
+
+    （2026-10-13 删了退避重启与熔断，理由见 neo/supervisor.py 开头第 2 条。这一格以前是
+    全套件最慢的：14.7 秒 —— 四次杀掉进程加整张退避表；现在三条用例合起来约 2 秒。）
+    """
 
     def kill(self):
         s = self.sup.status()
@@ -259,37 +261,38 @@ class TestCrashRestart(SupervisorBase):
         proc.kill()
         return pid
 
-    def test_unexpected_exit_restarts(self):
+    def test_unexpected_exit_stops_and_is_reported(self):
+        sup = self.make()
+        sup.start()
+        self.wait(lambda x: x["state"] == RUNNING, why="第一次就绪")
+        self.kill()
+        s = self.wait(lambda x: x["state"] == IDLE and x["last_exit"],
+                      why="退出后要停着并记下退出码")
+        self.assertIsNone(sup._proc, "不该有自动重启出来的新进程")
+        self.assertIsNotNone(s["last_exit"]["code"], "要记下退出码")
+        self.assertTrue(s["diagnosis"], "要给一句能照着做的提示")
+        texts = " ".join(e["text"] for e in s["events"])
+        self.assertIn("已停止，点「启动」重新起", texts, "事件里要说清下一步要用户点「启动」")
+        # 0.6 秒是 poll_s 0.05 的十几轮：这段时间里会被自动拉起就一定看得见
+        time.sleep(0.6)
+        self.assertEqual(sup.status()["state"], IDLE, "崩了之后保持停着，不自动拉起")
+        self.assertIsNone(sup._proc, "崩了之后不该有子进程")
+
+    def test_start_after_a_crash_starts_again(self):
+        """崩了停着之后，用户点"启动"要真的再起一个进程。
+
+        旧代码做不到这一条：监督线程停在盯端口那一层（_watch_external）出不去，
+        熔断后的"重试"点了等于没点。2026-10-13 删退避重启时一起修（_start_seq）。
+        """
         sup = self.make()
         sup.start()
         first = self.wait(lambda x: x["state"] == RUNNING, why="第一次就绪")
-        pid = self.kill()
-        self.wait(lambda x: x["state"] in (RESTARTING, STARTING), why="进入自动重启")
-        again = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="重启后就绪")
-        self.assertNotEqual(first["pid"], again["pid"], "重启后应该是新的进程")
-        self.assertGreaterEqual(again["restart_number"], 1)
-        self.assertEqual(len(again["restarts"]), 1, "10 分钟窗口里记 1 次重启")
-
-    def test_backoff_sequence_and_breaker(self):
-        sup = self.make()
-        sup.start()
-        self.wait(lambda x: x["state"] == RUNNING, why="就绪")
-        delays = []
-        for expected in (1, 2, 3):
-            self.kill()
-            self.wait(lambda x, e=expected: x["restart_number"] >= e, why=f"第 {expected} 次重启计数")
-            delays.append(self.sup.status()["restart_number"])
-            self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="重启后就绪")
-        s = sup.status()
-        self.assertEqual(delays, [1, 2, 3], "退避按第 1/2/3 次走")
         self.kill()
-        self.wait(lambda x: x["state"] == HALTED, why="熔断")
-        s = sup.status()
-        self.assertGreater(len(s["restarts"]), s["max_restarts"], "超过上限才熔断")
-        self.assertIsNone(sup._proc, "熔断后不该再有子进程")
-        self.assertTrue(s["diagnosis"], "熔断要给一句诊断")
-        time.sleep(1.0)
-        self.assertEqual(sup.status()["state"], HALTED, "熔断后保持停着，等人工处理")
+        self.wait(lambda x: x["state"] == IDLE and x["last_exit"], why="退出后要停着")
+        sup.start()
+        again = self.wait(lambda x: x["state"] == RUNNING and x["healthy"], why="点启动后要重新就绪")
+        self.assertNotEqual(first["pid"], again["pid"], "重新起来的是新进程")
+        self.assertIsNone(again["last_exit"], "重新就绪后不该还挂着上次退出的提示")
 
     def test_stop_never_autorestarts(self):
         sup = self.make()
@@ -300,16 +303,17 @@ class TestCrashRestart(SupervisorBase):
         self.assertEqual(s["state"], IDLE)
         self.assertEqual(s["intent"], "stop")
         self.assertIsNone(sup._proc)
-        # 1.2 秒比退避表里最长的那一档（0.4 秒）长好几倍：这段时间里要是会被自动拉起，就一定看得见
-        time.sleep(1.2)
+        # 1.0 秒是 poll_s 0.05 的二十几轮：这段时间里要是会被自动拉起，就一定看得见
+        time.sleep(1.0)
         self.assertEqual(sup.status()["state"], IDLE, "停止后不能被自动拉起")
-        self.assertEqual(sup.status()["restarts"], [], "用户停止不计入重启次数")
 
 
 class TestAdopt(SupervisorBase):
     def test_adopts_a_live_server(self):
         """端口上已有活着的服务（用户先用 START-HERE.bat 起来了）：认下它，不重复启动。"""
         import subprocess
+        if not SERVER_OK:
+            self.skipTest(SERVER_WHY)
         port = free_port()
         proc = subprocess.Popen([state.python_executable(ENGINE), str(ENGINE / "serve" / "server.py"),
                                  "--engine", "mock", "--port", str(port)], cwd=str(ENGINE),
@@ -379,9 +383,16 @@ class TestExternalService(unittest.TestCase):
     """端口上有一个脚本先起来的服务：Neo 要说"运行中（外部启动）"，日志页要有它的日志。
 
     实测 2026-10-12 在 D:\\Work\\Strata：run-swift-iq3_xxs.bat 起的服务在 8080 上正常
-    应答 /health，Neo 熔断后状态页写"未启动"、日志页是空的（用户的话是"我感觉已经
+    应答 /health，Neo 停着的时候状态页写"未启动"、日志页是空的（用户的话是"我感觉已经
     启动了，只是日志没有看到，状态也不对"）。
     """
+
+    @classmethod
+    def setUpClass(cls):
+        # 这三条起的是引擎的真 serve/server.py：起不动就整类跳过（原因见 _bootstrap.server_ready），
+        # 不能让监督器一遍遍重启一个 import 就死的进程、把每条的等待跑满。
+        if not SERVER_OK:
+            raise unittest.SkipTest(SERVER_WHY)
 
     def make(self, adapter, port, **kw):
         kw.setdefault("poll_s", 0.05)
@@ -390,7 +401,7 @@ class TestExternalService(unittest.TestCase):
         self.sup = Supervisor(adapter, port, **kw)
         return self.sup
 
-    def wait_for(self, sup, pred, timeout=40.0, why=""):
+    def wait_for(self, sup, pred, timeout=20.0, why=""):
         t0 = time.time()
         while time.time() - t0 < timeout:
             s = sup.status()
@@ -445,14 +456,15 @@ class TestExternalService(unittest.TestCase):
         self.assertEqual(s["log_path"], str(tmp / "external.log"),
                          "日志页要指向服务在写的那个文件")
 
-    def test_halted_neo_reports_external_as_running(self):
-        """Neo 自己起不来（熔断）时，端口上有一个活着的服务：状态是"运行中（外部启动）"。"""
-        tmp = self.temp_root("neo-ext-halt-")
+    def test_stopped_neo_reports_external_as_running(self):
+        """Neo 自己起不来（停着）时，端口上有一个活着的服务：状态是"运行中（外部启动）"。"""
+        tmp = self.temp_root("neo-ext-stop-")
         port = free_port()
         sup = self.make(NoPlanEngine(tmp), port)
         sup.start()
-        s = self.wait_for(sup, lambda x: x["state"] == HALTED, why="起不来要熔断")
-        self.assertEqual(s["display_state"], HALTED, "端口上没服务时就是停着")
+        s = self.wait_for(sup, lambda x: x["state"] == IDLE and x["diagnosis"],
+                          why="起不来要停着并给出原因")
+        self.assertEqual(s["display_state"], IDLE, "端口上没服务时就是停着")
         self.assertFalse(s["external"])
         self.start_server(port)
         s = self.wait_for(sup, lambda x: x["display_state"] == EXTERNAL,

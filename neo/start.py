@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 from . import connect, connectors, state, tokens
+from .cli import wide_stdout
 from .engines import make_adapter
 
 AGENTS = connectors.AGENTS
@@ -157,6 +158,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    wide_stdout()
     args = parse_args(argv)
     agent = str(args.agent or "list").strip().lower()
     root = connect.resolve_root(args.root)

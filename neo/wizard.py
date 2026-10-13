@@ -23,9 +23,10 @@ import threading
 import time
 from pathlib import Path
 
-from . import netprobe, state, tokens
+from . import netprobe, paths, state, tokens
+from .cli import wide_stdout
 from .engines import make_adapter
-from .paths import safe_resolve
+from .paths import resolve_root
 
 SETUP_NAME = "setup.py"
 WIZARD_LOG_NAME = "wizard.log"
@@ -81,8 +82,10 @@ def steps(root, port: int = 8080, host: str = "127.0.0.1", api_key: str = "") ->
     has_setup = setup_path(root).is_file()
     out.append({"name": "根目录", "ok": has_setup,
                 "text": (f"{root} 里有 setup.py" if has_setup
-                         else f"{root} 里没有 setup.py —— 这不是 Strata 的根目录，"
-                              "用 --root 指一个，或先把项目解压出来")})
+                         else f"{root} 里没有 setup.py —— 这不是 Strata 的根目录。"
+                              "两条路：python -m neo.engine_setup --ensure 让 Neo 按 pin 自己装一份，"
+                              "或 python -m neo.engine_setup --set-root <目录> 用这台机器上"
+                              "别处一键装好的那一份（记一次就长期用，不复制目录）")})
     adapter = make_adapter("strata", root)
     items = []
     try:
@@ -190,7 +193,9 @@ def parse_args(argv=None):
     import argparse
 
     p = argparse.ArgumentParser(description="Neo 安装向导（跑 setup.py，源自动选）")
-    p.add_argument("--root", default=str(safe_resolve(Path(__file__).parent).parent))
+    p.add_argument("--root", default="",
+                   help="Strata 的根目录（不给就按 neo/paths.py 那一条规则，"
+                        "认 neo/state/launcher.json 记住的引擎目录、<这里>/strata/ 与 NEO_STRATA_ROOT）")
     p.add_argument("--family", default="", help="setup.py 的 --family（qwen / coder / swift / unsloth）")
     p.add_argument("--model", default="", help="setup.py 的 --model（不给就按推荐）")
     p.add_argument("--port", type=int, default=0)
@@ -205,11 +210,21 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    wide_stdout()
     args = parse_args(argv)
-    root = safe_resolve(args.root)
+    root = resolve_root(args.root)
+    why = paths.strata_root(args.root)[1]
+    print(f"== 根目录 {root}（{why}）")
     print("== 现状")
     for item in steps(root, port=args.port, host=args.host, api_key=args.api_key):
         print(f"  [{'OK' if item['ok'] else '—'}] {item['name']}：{item['text']}")
+    if not setup_path(root).is_file():
+        # 命令预览指的是 <根目录>/setup.py：它不在，就别把一条跑不通的命令摆在最前面
+        print("== 命令")
+        print("  先让引擎到位：python -m neo.engine_setup --ensure"
+              "（Neo 按 pin 自己装）")
+        print("  或用别处装好的：python -m neo.engine_setup --set-root <目录>")
+        return 0
     print("== 命令")
     argv = setup_argv(root, family=args.family, model=args.model, port=args.port,
                       host=args.host, api_key=args.api_key, source=args.source)

@@ -29,7 +29,9 @@ import time
 from pathlib import Path
 
 from . import netprobe, state
+from .cli import wide_stdout
 from .engines import make_adapter
+from .paths import resolve_root
 
 SETUP_NAME = "setup.py"
 UNSLOTH_RAM_LEFT_GB = 24          # setup.py 的同名常量：内存里留给 OS/引擎/文件缓存的那部分
@@ -431,22 +433,29 @@ def known(root, family: str, model: str) -> bool:
     return model in sizes_of_family(models_tbl, family)
 
 
-def main(argv=None) -> int:
-    """命令行看一眼可安装清单：python -m neo.models [--root 目录] [--json]"""
+def parse_args(argv=None):
+    """命令行参数（与 neo/wizard.py 同一形状：--root 不给就走 neo/paths.py 那条规则）。"""
     import argparse
-    import json as _json
-
-    from .paths import safe_resolve
 
     p = argparse.ArgumentParser(description="这台机器能装哪些模型、该装哪一个")
-    p.add_argument("--root", default=str(safe_resolve(Path(__file__).parent).parent))
+    p.add_argument("--root", default="",
+                   help="Strata 的根目录（不给就按 neo/paths.py 那一条规则，"
+                        "认 neo/state/launcher.json 记住的引擎目录、<这里>/strata/ 与 NEO_STRATA_ROOT）")
     p.add_argument("--json", action="store_true")
     p.add_argument("--source", default="", choices=list(SOURCE_KEYS),
                    help="记下装模型要用的下载源（不给就只读，不改）")
-    args = p.parse_args(argv)
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    """命令行看一眼可安装清单：python -m neo.models [--root 目录] [--json]"""
+    import json as _json
+
+    wide_stdout()
+    args = parse_args(argv)
     if args.source:
         save_source_choice(args.source)
-    data = catalog(safe_resolve(args.root))
+    data = catalog(resolve_root(args.root))
     if args.json:
         print(_json.dumps(data, ensure_ascii=False, indent=2))
         return 0

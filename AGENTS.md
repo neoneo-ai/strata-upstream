@@ -35,9 +35,11 @@ offers the same steps as tools.
 > `<repo>/strata` (`python -m neo.engine_setup --ensure` clones the pinned tag there), and
 > `neo/tests/_bootstrap.py` is what separates `REPO` from `ENGINE`.
 
-`neo/` is an additive desktop layer (window shell, process supervisor, crash auto-restart, status/logs/chat/monitor
+`neo/` is an additive desktop layer (window shell, process supervisor - a crash is reported, never
+auto-restarted, status/logs/chat/monitor
 pages). It talks to Strata only through existing CLI flags, env vars and HTTP endpoints, and keeps all its own state
-under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules, the single-instance rules and
+under `neo/state/` - it changes no upstream file. Details, the supervisor rules (no auto-restart since
+2026-10-13: the backoff/breaker path cost more than it paid), the single-instance rules and
 its tests: **[docs/NEO_DESKTOP.md](docs/NEO_DESKTOP.md)**. Package it as one windowed `NeoStrata.exe` with
 `python -m neo.build_exe` (spec `neo/NeoStrata.spec`), with pywebview installed in the build env - the build refuses
 when a build package is missing and names every missing one in one message (pywebview included, because the exe
@@ -72,22 +74,39 @@ neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
 neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings
-neo.tests.test_paths neo.tests.test_engine_setup neo.tests.test_deploy`
+neo.tests.test_paths neo.tests.test_engine_setup neo.tests.test_deploy neo.tests.test_harness`
 Run them through `python -m neo.tests.run_all`: it splits every module into its test classes and runs the
 classes in parallel (`--jobs`, default `min(4, cores)`), prints seconds per class, and re-runs a failed class
-alone once so a port/load flake is reported apart from a real failure. Measured 2026-10-13 on the same
-machine: **18.8 s wall for 488 tests with `--skip-network`, 29.2 s with the clone case in** (the same units
-summed serially are 71.1 s; the 19 modules as one `python -m unittest` line were 1067.1 s before this, and
-492 tests / 1067.1 s is the number that paragraph used to carry). `--quick` takes the sixteen modules that
-start no processes: **10.2 s wall, 401 tests**. `--skip-network` drops the one unit that really touches the
+alone once so a port/load flake is reported apart from a real failure. **Test-time standard (2026-10-13):
+every run reports its time, and no unit and no suite wall goes over 30 s** - `run_all.BUDGET_S` is that
+number, `--timeout` defaults to it, a unit over it is marked `OK(超预算)` and the run fails; over 30 s means
+optimize, not raise the timeout. Measured 2026-10-13 on the same machine (Windows 11, Python 3.13, Defender
+on): **9.6 s wall for 435 tests with `--quick --skip-network`, 17.1 s wall for 523 tests with
+`--skip-network`** (slowest units 5.7 s `test_models.TestCatalog` and 5.1 s
+`test_supervisor.TestCrashStops`; before the backoff restart was deleted the slowest unit was
+`test_supervisor.TestCrashRestart` at 14.7 s - four kills and the whole backoff table, 18.3 s wall -
+and the same units summed serially are 66.1 s, while the 19 modules as one `python -m unittest`
+line were 1067.1 s before the split). In a full Strata checkout - the deployed shape, where
+`strata_root()` resolves to the checkout itself - the quick pass measured 8.9 s / 408 tests the same day,
+and the full pass there is not green: `test_engine_setup.TestPlan.test_plan_default_dest_is_the_app_strata`
+and `TestExternalRoot.test_default_dest_follows_the_remembered_root` assume the Neo-only shape where the
+engine root is `<repo>/strata`. `--skip-network` drops the one unit that really touches the
 network - `test_engine_setup.TestRunAndPage` clones the pinned tag, and it measured 6.8 s and 145.3 s on the
-same machine the same day, so the wall clock of a full run follows the link.
+same machine the same day, so under the 30 s standard a full run drops it and that unit runs alone with a
+raised `--timeout`.
+When the engine's own `serve/server.py` cannot import (its `.venv` lacks the upstream packages), the units
+that spawn it skip with the missing package named - `neo/tests/_bootstrap.py::server_ready` reads its imports
+with `ast` in milliseconds and starts no process. Measured 2026-10-13: with `jinja2` missing the spawned
+process died at import, the supervisor restarted it through the whole backoff table, every test ran its wait
+out, and a full run went from 18.3 s to 5 minutes (that backoff restart was deleted the same day -
+see `neo/supervisor.py`). `neo/tests/test_harness.py` pins the 30 s standard and
+that skip rule.
 `test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one commit per case),
 which is why they were 8.4 s and 5.0 s alone and minutes inside a serial full run: Windows Defender scans
 each temp dir. Run the quick pass while developing, the full pass before a deploy.
 Supervisor tests drive `neo/tests/mock_server.py` - a stdlib service that answers `/health` and `/metrics`
-in the shapes Neo reads - as a real subprocess on a real port, so start, ready, kill, restart, backoff and
-breaker all stay real: spawn is 0.27 s against `serve/server.py --engine mock`'s 0.27 s, and what the mock
+in the shapes Neo reads - as a real subprocess on a real port, so start, ready, kill, stop-with-a-diagnosis
+and start-again-after-a-crash all stay real: spawn is 0.27 s against `serve/server.py --engine mock`'s 0.27 s, and what the mock
 skips is the 3.5 s it takes the full server stack to answer `/health` the first time.
 `TestStartAndReady.test_start_to_running` keeps the real `serve/server.py --engine mock`, because "the
 upstream readiness line reaches the log" is the Neo/upstream seam and the mock must not vouch for it.

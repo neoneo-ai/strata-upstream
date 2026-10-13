@@ -53,7 +53,7 @@ def main() -> int:
             print(f"  {i}s 控制台还没起来：{e}")
             continue
         print(f"  {i}s state={s['state']} listening={s['listening']} healthy={s['healthy']} "
-              f"pid={s['pid']} 重启={len(s['restarts'])}")
+              f"pid={s['pid']} 上次退出={s['last_exit']}")
         if s["state"] == "running" and s["healthy"]:
             ready = s
             break

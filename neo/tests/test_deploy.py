@@ -100,6 +100,32 @@ def quiet(argv):
     return code, buffer.getvalue()
 
 
+class TestWideStdoutShared(unittest.TestCase):
+    """打印中文的命令行共用同一个 wide_stdout（neo/cli.py），不许一个模块一份。
+
+    2026-10-13 它先写在 neo/deploy.py、neo/engine_setup.py 里各一份；打印中文的
+    命令行越来越多（wizard / models / model_settings / connect / start 都会），
+    就收敛到 neo/cli.py 一处。这一条挡的是"又复制了一份"和"某个命令行漏了"。
+    """
+
+    def test_every_cli_module_imports_the_same_function(self):
+        from neo import cli, connect, model_settings, models, start, wizard
+
+        for name, mod in (("deploy", deploy), ("engine_setup", engine_setup),
+                          ("wizard", wizard), ("models", models),
+                          ("model_settings", model_settings), ("connect", connect),
+                          ("start", start)):
+            with self.subTest(module=name):
+                self.assertIs(mod.wide_stdout, cli.wide_stdout)
+
+    def test_cli_module_does_not_carry_its_own_copy(self):
+        """cli.py 里那份是唯一实现：源码里 reconfigure 只出现一次。"""
+        from neo import cli
+
+        source = Path(cli.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("reconfigure("), 1)
+
+
 class TestFileList(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

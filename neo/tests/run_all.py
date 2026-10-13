@@ -12,6 +12,8 @@ Python 3.13，`serve/server.py --engine mock`）。串行跑的是"一个进程�
     python -m neo.tests.run_all -m neo.tests.test_console   # 只跑点名的模块
 每个模块是一个 `python -m unittest <module>` 子进程：模块内共享的服务（见各模块的
 setUpClass）留在一个进程里，模块之间才并行。失败的模块会打出它输出的末尾几十行。
+
+时间标准（2026-10-13）：单元与套件的墙上时间都按 30 秒封顶（见 BUDGET_S），跑完必报时间。
 """
 from __future__ import annotations
 
@@ -51,6 +53,7 @@ FULL_MODULES = [
     "neo.tests.test_paths",
     "neo.tests.test_engine_setup",
     "neo.tests.test_deploy",
+    "neo.tests.test_harness",
 ]
 #: 快跑：这 16 个模块不起真进程（不起 serve/server.py、不起监督器），开发时用它。
 #: 起真进程的是 test_supervisor / test_console / test_connect_api / test_model_settings
@@ -59,6 +62,10 @@ QUICK_MODULES = [m for m in FULL_MODULES
                  if m not in ("neo.tests.test_supervisor", "neo.tests.test_console",
                               "neo.tests.test_connect_api")]
 _RAN = re.compile(r"Ran (\d+) tests?")
+
+#: 测试时间标准（2026-10-13 定的）：每个并行单元、整套套件的墙上时间都不超过 30 秒，
+#: 超过就要优化（不是把超时调大）。跑完一定报时间：单元逐个报，套件报墙上总时间。
+BUDGET_S = 30.0
 
 
 def run_module(target: str, timeout_s: float) -> dict:
@@ -92,8 +99,8 @@ def module_classes(module: str) -> list[str]:
     """这个模块里的测试类，形如 ["neo.tests.test_supervisor.TestCrashRestart", ...]。
 
     并行按类切：`python -m unittest neo.tests.test_supervisor.TestCrashRestart` 是 unittest
-    认的写法。test_supervisor 里最慢的类（TestCrashRestart：杀掉服务、看自动重启、退避、
-    熔断）比它同模块里其他类慢一个量级，整模块并行时它就是墙上时间；按类切之后
+    认的写法。test_supervisor 里最慢的类（TestCrashStops：杀掉服务、看它停着与诊断、
+    再点启动）比它同模块里其他类慢一个量级，整模块并行时它就是墙上时间；按类切之后
     它和其他类同时跑。类内的 setUpClass 共享服务不受影响（一个类还是一个进程）。
     """
     import unittest
@@ -123,7 +130,9 @@ def main(argv=None) -> int:
                     help="并发数（默认 min(4, CPU 核数)；1 就是串行）")
     ap.add_argument("-m", "--module", action="append", default=[],
                     help="只跑点名的模块（可重复）")
-    ap.add_argument("--timeout", type=float, default=900.0, help="单模块超时秒数")
+    ap.add_argument("--timeout", type=float, default=BUDGET_S,
+                    help=f"单单元超时秒数（默认 {BUDGET_S:.0f} 秒，就是测试时间标准；"
+                         f"临时放宽用这个）")
     ap.add_argument("--no-split", action="store_true",
                     help="按模块切（默认按测试类切，见 module_classes）")
     ap.add_argument("--retries", type=int, default=1,
@@ -166,6 +175,8 @@ def main(argv=None) -> int:
     for r in sorted(results, key=lambda x: -x["secs"]):
         name = r["target"].replace("neo.tests.", "")
         flag = "OK" if r["rc"] == 0 else ("TIMEOUT" if r["timeout"] else "FAIL")
+        if r["rc"] == 0 and r["secs"] > BUDGET_S:
+            flag = "OK(超预算)"
         print(f"{name:<46}{r['tests_n']:>6}{r['secs']:>9.1f}  {flag}")
     failed = [r for r in results if r["rc"] != 0]
     flakes: list[str] = []
@@ -189,10 +200,18 @@ def main(argv=None) -> int:
     tests = sum(r["tests_n"] for r in results)
     print(f"\n{len(modules)} 个模块 / {len(targets)} 个并行单元、{tests} 个用例、"
           f"{jobs} 个并发，墙上 {total:.1f} 秒（串行相加约 {sum(r['secs'] for r in results):.1f} 秒）")
+    over = sorted((r for r in results if r["secs"] > BUDGET_S), key=lambda x: -x["secs"])
+    if over:
+        print(f"超预算（单单元 >{BUDGET_S:.0f} 秒）：" + ", ".join(
+            f"{r['target'].replace('neo.tests.', '')} {r['secs']:.1f}s" for r in over))
     if flakes:
         print("抖动（并发下失败、单独重跑通过）：" + ", ".join(flakes))
     if failed:
         print("失败：" + ", ".join(r["target"] for r in failed))
+        return 1
+    if over or total > BUDGET_S:
+        print(f"超过 {BUDGET_S:.0f} 秒标准（墙上 {total:.1f} 秒）：这一条要优化，"
+              f"不是把 --timeout 调大（标准见本文件 BUDGET_S 与 AGENTS.md）")
         return 1
     return 0
 

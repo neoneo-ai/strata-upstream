@@ -33,7 +33,9 @@ import json
 from pathlib import Path
 
 from . import gguf_meta, state
+from .cli import wide_stdout
 from .engines.strata import arg_value, model_file_of
+from .paths import resolve_root
 
 GIB = 2 ** 30
 MIB = 2 ** 20
@@ -491,27 +493,36 @@ def _configs(root) -> list[dict]:
     return list_configs(root)
 
 
-def main(argv=None) -> int:
-    """命令行看/改一个模型的运行参数：
-
-        python -m neo.model_settings --root .                      看最近用过的那个
-        python -m neo.model_settings --root . --model strata-x.json --json
-        python -m neo.model_settings --root . --set context=65536 kv=q4_0
-        python -m neo.model_settings --root . --reset              删掉覆盖配置
-    """
+def parse_args(argv=None):
+    """命令行参数（--root 不给就走 neo/paths.py 那条规则：模型装在引擎根里）。"""
     import argparse
 
-    from .paths import safe_resolve
-
     p = argparse.ArgumentParser(description="看与改一个模型的上下文 / KV / 图片 / 显存保留")
-    p.add_argument("--root", default=".")
+    p.add_argument("--root", default="",
+                   help="Strata 的根目录（strata-*.json 在那儿；不给就按 neo/paths.py "
+                        "那一条规则，认 <这里>/strata/ 与 NEO_STRATA_ROOT）")
     p.add_argument("--model", default="", help="模型 id（配置文件名，默认最近用过的那个）")
     p.add_argument("--set", dest="sets", nargs="*", default=[],
                    help="要改的：context=65536 kv=q4_0 vision=off vram_reserve_mib=1500")
     p.add_argument("--reset", action="store_true", help="删掉这个模型的覆盖配置")
     p.add_argument("--json", action="store_true")
-    args = p.parse_args(argv)
-    root = safe_resolve(Path(args.root))
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    """命令行看/改一个模型的运行参数（根目录不给就按 neo/paths.py 那条规则）：
+
+        python -m neo.model_settings                       看最近用过的那个
+        python -m neo.model_settings --model strata-x.json --json
+        python -m neo.model_settings --set context=65536 kv=q4_0
+        python -m neo.model_settings --reset               删掉覆盖配置
+        python -m neo.model_settings --root D:\\Work\\Strata   点名指一个根
+    """
+    import json as _json
+
+    wide_stdout()
+    args = parse_args(argv)
+    root = resolve_root(args.root)
     item = pick_config(root, args.model)
     if item is None:
         print(f"{root} 里没有 strata-*.json —— 这台机器还没装模型")

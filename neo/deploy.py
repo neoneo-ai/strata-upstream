@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from . import engine_setup, paths, state
+from .cli import wide_stdout
 from .paths import safe_resolve
 
 EXE_NAME = "NeoStrata.exe"
@@ -54,19 +55,8 @@ QUICK_SUITE = ("test_start", "test_models", "test_ui", "test_tokens", "test_netp
                "test_model_settings", "test_paths", "test_engine_setup", "test_deploy")
 
 
-def wide_stdout() -> None:
-    """把 stdout 换成装得下中文与替换符的编码。
-
-    实测 2026-10-13：`--apply` 跑完打印快套件的尾部时抛
-    `UnicodeEncodeError: 'gbk' codec can't encode character '\\ufffd'` —— 子进程的输出按
-    utf-8 读、读不到的字节变成 U+FFFD，而 Windows 控制台默认是 cp936，那个字符它装不下。
-    体检已经跑完了，崩在打印上：换版脚本要说清结果，不能把结果弄丢。
-    测试里 stdout 常被换成 `StringIO`（没有 reconfigure），那条路原样不动。
-    """
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError, OSError):
-        pass
+#: wide_stdout() 在 neo/cli.py（打印中文的命令行共用），上面 import 进来。
+#: 它守的那次崩溃（子进程输出里的 U+FFFD 落进 cp936 控制台）记在 cli.py 的模块串里。
 
 
 

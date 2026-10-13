@@ -35,7 +35,6 @@
     <div class="head-right">
       <button id="btn-start" class="primary" data-i18n="h.start">启动</button>
       <button id="btn-stop" data-i18n="h.stop">停止</button>
-      <button id="btn-retry" class="hidden" data-i18n="h.retry">重试</button>
       <button id="btn-refresh" data-i18n="h.refresh">刷新</button>
     </div>
   </header>
@@ -71,7 +70,7 @@
         <tr><th data-i18n="svc.model">模型</th><td id="s-model">—</td></tr>
         <tr><th data-i18n="svc.port">端口</th><td id="s-port">—</td></tr>
         <tr><th data-i18n="svc.pid">进程</th><td id="s-pid">—</td></tr>
-        <tr><th data-i18n="svc.restarts">自动重启</th><td id="s-restarts">—</td></tr>
+        <tr><th data-i18n="svc.exit">上次退出</th><td id="s-exit">—</td></tr>
         <tr><th data-i18n="svc.log">日志</th><td id="s-log" class="path">—</td></tr>
       </table>
       <div class="row">
@@ -268,10 +267,19 @@
 
     <div class="panel">
       <h3 data-i18n="panel.engine">引擎源码树</h3>
+      <p class="muted" id="engine-root">—</p>
       <div id="engine-steps" class="steps"></div>
       <div class="row">
         <button id="engine-run" class="primary" data-i18n="engine.run">按 pin 安装引擎</button>
+        <button id="engine-align" data-i18n="engine.align">对齐到 pin</button>
         <button id="engine-copy" data-i18n="engine.copy">复制 clone 命令</button>
+      </div>
+      <div class="row">
+        <label><span data-i18n="engine.root.label">用外置的引擎目录（一键装好的那一份）</span>
+          <input id="engine-root-input" type="text" placeholder="D:\Work\Strata"
+                 spellcheck="false" autocomplete="off"></label>
+        <button id="engine-root-set" data-i18n="engine.root.set">用这个目录</button>
+        <button id="engine-root-clear" data-i18n="engine.root.clear">清除（Neo 自己装）</button>
       </div>
       <p class="muted" id="engine-cmd"></p>
       <pre id="engine-log" class="log small"></pre>
@@ -279,7 +287,10 @@
         tag 取源码（<code>git clone --depth 1</code>；没有 git 就下载 zip，SHA-256 与 pin 一致才解压），
         放进 <code>strata/</code>。venv、依赖、引擎二进制、模型全交给上游的 <code>setup.py</code>，
         Neo 一个都不自己装。这一页写过的东西都在 <code>strata/</code> 与 <code>neo/state/</code> 里，
-        上游文件一个不改；目录里有人改过（<code>dirty</code>）时 Neo 拒绝动它。</p>
+        上游文件一个不改；目录里有人改过（<code>dirty</code>）时 Neo 拒绝动它。
+        这台机器上别处已经一键装好的 Strata 不用复制：把它的目录填进上面那一格，
+        Neo 记一次就长期用它（<code>neo/state/launcher.json</code> 的 <code>root</code>）；
+        外置那一份的版本与 pin 不一样时 Neo 只说，不动它的 HEAD，要动就点「对齐到 pin」。</p>
     </div>
 
     <div class="panel">

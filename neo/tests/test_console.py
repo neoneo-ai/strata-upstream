@@ -34,7 +34,7 @@ from neo import state                                          # noqa: E402
 from neo import console_server as cs                          # noqa: E402
 from neo.console_server import ConsoleServer                   # noqa: E402
 from neo.engines.base import EngineAdapter, STRATA_MONITOR_PATH   # noqa: E402
-from neo.supervisor import HALTED, Supervisor                  # noqa: E402
+from neo.supervisor import IDLE, Supervisor                         # noqa: E402
 
 from neo.tests.test_supervisor import free_port                # noqa: E402
 
@@ -115,7 +115,7 @@ class TestConsole(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("application/json", headers.get("content-type", ""))
         data = json.loads(body)
-        for key in ("state", "port", "engine", "events", "pages", "installed", "backoff"):
+        for key in ("state", "port", "engine", "events", "pages", "installed", "last_exit"):
             self.assertIn(key, data)
         self.assertEqual(data["engine"], "fake")
         self.assertTrue(data["pages"]["chat"].endswith("/"))
@@ -131,16 +131,17 @@ class TestConsole(unittest.TestCase):
             self.assertEqual(code, 200, asset)
             self.assertEqual(headers.get("cache-control"), "no-store", asset)
 
-    def test_start_with_a_broken_engine_halts_with_diagnosis(self):
+    def test_start_with_a_broken_engine_stops_with_diagnosis(self):
+        """起不来的引擎：停在 idle（不自动重启、不熔断），并给一句能照着看的原因。"""
         self.post("/neo/start")
-        state_seen = None
+        data, state_seen = {}, None
         for _ in range(40):
             data = json.loads(self.get("/neo/status")[2])
             state_seen = data["state"]
-            if state_seen == HALTED:
+            if state_seen == IDLE and data["diagnosis"]:
                 break
             time.sleep(0.2)
-        self.assertEqual(state_seen, HALTED, "起不来的引擎要停在熔断态")
+        self.assertEqual(state_seen, IDLE, "起不来的引擎要停着（Neo 不自动重启）")
         self.assertIn("不启动进程", data["diagnosis"])
 
     def test_models_and_log(self):
@@ -632,17 +633,20 @@ class TestEngineEndpoint(unittest.TestCase):
     def test_get_engine_status_has_the_shape_the_page_reads(self):
         data = self.console.engine_status()
         for key in ("state", "action", "tag", "sha", "head", "archive", "git",
+                    "root", "root_reason", "remembered", "own",
                     "clone_command", "steps", "ready", "notes", "run", "log_tail"):
             self.assertIn(key, data, f"引擎卡要读 {key}")
         self.assertIn(data["state"], engine_setup.STATE_ACTION)
         self.assertEqual([x["name"] for x in data["steps"]],
-                         ["引擎源码", "取源码的路", "交给 setup.py"])
+                         ["引擎目录", "引擎源码", "取源码的路", "交给 setup.py"])
 
     def test_the_routes_are_wired(self):
         src = (ROOT / "neo" / "console_server.py").read_text(encoding="utf-8")
         self.assertIn('path == "/neo/engine"', src)
         self.assertIn("self.server.engine_status()", src)
         self.assertIn("self.server.engine_run(body)", src)
+        self.assertIn('path == "/neo/engine_root"', src)
+        self.assertIn("self.server.engine_root_set(body)", src)
 
     def test_every_endpoint_the_handler_calls_is_attached_in_start(self):
         """Handler 里 `self.server.X(...)` 用到的每个名字，start() 都得挂到 httpd 上。
@@ -695,6 +699,37 @@ class TestEngineEndpoint(unittest.TestCase):
         out = self.console.engine_run({"action": "delete"})
         self.assertFalse(out["started"])
         self.assertIn("动作", out["error"])
+
+    def test_the_engine_root_route_remembers_and_clears(self):
+        """POST /neo/engine_root 真走一次 HTTP：记一个引擎目录、再清掉。
+
+        launcher.json 指进 tempfile —— 这一条真写文件，不能写用户的 neo/state/。
+        """
+        was_state, was_launcher = state.STATE, state.LAUNCHER
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "one-click-strata"
+            target.mkdir()
+            try:
+                state.STATE = Path(td) / "state"
+                state.LAUNCHER = state.STATE / "launcher.json"
+                code, _h, body = req(self.url.rstrip("/") + "/neo/engine_root",
+                                     method="POST", body={"action": "set", "root": str(target)},
+                                     timeout=20.0)
+                self.assertEqual(code, 200)
+                data = json.loads(body)
+                self.assertTrue(data["ok"], data)
+                self.assertEqual(state.engine_root(), str(target))
+                self.assertIn(str(target), self.console.engine_status(fresh=True)["root"])
+                code, _h, body = req(self.url.rstrip("/") + "/neo/engine_root",
+                                     method="POST", body={"action": "clear"}, timeout=20.0)
+                self.assertEqual(code, 200)
+                self.assertEqual(state.engine_root(), "")
+                code, _h, body = req(self.url.rstrip("/") + "/neo/engine_root",
+                                     method="POST", body={"action": "nope"}, timeout=20.0)
+                self.assertEqual(code, 200)
+                self.assertIn("动作", json.loads(body)["error"])
+            finally:
+                state.STATE, state.LAUNCHER = was_state, was_launcher
 
     def test_install_runs_in_background_with_the_supervisors_settings(self):
         calls = []

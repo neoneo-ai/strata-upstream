@@ -21,16 +21,14 @@ import os
 import sys
 from pathlib import Path
 
-from . import connectors, netprobe, state, tokens
+from . import connectors, netprobe, paths, state, tokens
+from .cli import wide_stdout
 from .engines import make_adapter
-from .paths import safe_resolve
 
 
 def resolve_root(value: str = "") -> Path:
-    if value:
-        return safe_resolve(value)
-    from .manager import default_root
-    return safe_resolve(default_root())
+    """`--root` 不给就按 neo/paths.py 那一条规则（neo/paths.py::resolve_root）。"""
+    return paths.resolve_root(value)
 
 
 def resolve_port(args, adapter) -> int:
@@ -168,6 +166,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    wide_stdout()
     args = parse_args(argv)
     agent = str(args.agent or "list").strip().lower()
     if agent == "list":

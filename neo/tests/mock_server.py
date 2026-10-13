@@ -4,7 +4,7 @@
 serve/server.py --engine mock —— 那要 import 整个上游服务（numpy 等），实测 2026-10-13 在
 这台机器上（Defender 扫磁盘）一次 spawn 约 3.9 秒，test_supervisor 里 11 次 spawn 就是 43 秒。
 这个文件只用标准库，一次 spawn 约 0.3 秒，测的链路一个字都不少：
-启动 → 就绪 → 被杀 → 自动重启 → 退避 → 熔断。
+启动 → 就绪 → 被杀 → 停着并给出诊断 → 点启动再起。
 
 上游真行为（就绪行进日志、/health 的真字段）由 neo/tests/test_upstream_api.py 和
 test_supervisor 里那条用真 serve/server.py 的用例守着，不靠这个文件。

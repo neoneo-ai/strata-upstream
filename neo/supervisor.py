@@ -1,4 +1,4 @@
-"""neo/supervisor.py - 进程监督：启动 Strata 服务、探活、崩溃自动重启、熔断。
+"""neo/supervisor.py - 进程监督：启动 Strata 服务、探活、退出时给一句诊断。
 
 状态机：
 
@@ -6,20 +6,26 @@
                         │                          │
                         │ 加载超时                  │ 子进程非预期退出
                         ▼                          ▼
-                   restarting（退避 5/15/45 秒）<──┘
+                   idle（记下退出码与一句诊断，等用户点"启动"）
                         │
-                        └── 10 分钟内已经重启 3 次 ──> halted（熔断，等人工处理）
+                        └── 端口上出现活着的服务 ──> external（接手，见第 4 条）
 
-三条规则：
+四条规则：
   1. 用户点"停止"（intent=stop）后，任何情况下都不会自动拉起。
-  2. 上游自己会重启引擎（serve/server.py 的 StrataEngine.restart / #344），那只显示一条提示，
+  2. 服务非预期退出（崩溃、加载超时）后 Neo 也不自动拉起：记下退出码、日志尾部对得上的
+     那一句诊断和一条事件，状态回到 idle，由用户点"启动"。
+     为什么删掉退避重启与熔断（2026-10-13；原来的行为是"退避 5/15/45 秒、10 分钟内
+     3 次后熔断 halted"）：收益太小、麻烦太大，麻烦全是实测的 ——
+     模型重载本来归上游（下面第 3 条），Neo 这一层重启是重复劳动；退避 + 熔断把监督器的
+     测试拖成全套件最慢的一格（14.7 秒，全跑 18.3 秒里的八成）；引擎依赖缺失时它把整张
+     退避表跑完，全跑从 18.3 秒变 5 分钟（neo/tests/_bootstrap.py 的 server_ready 就是为
+     拦这件事加的）；熔断还让状态页在端口上有活着的服务时写"未启动"
+     （docs/NEO_DESKTOP.md 记的用户原话"我感觉已经启动了，只是日志没有看到，状态也不对"）。
+  3. 上游自己会重启引擎（serve/server.py 的 StrataEngine.restart / #344），那只显示一条提示，
      Neo 不干预 —— 模型重载由上游负责，Neo 只管 serve/server.py 这个进程。
-  3. 端口上已经有一个活着的服务（比如用户先用 START-HERE.bat 起来了），Neo 认下它、不重复启动。
+  4. 端口上已经有一个活着的服务（比如用户先用 START-HERE.bat 起来了），Neo 认下它、不重复启动。
      Neo 没有自己进程的那段时间也一直在盯这个端口：端口上有活着的服务，状态页就说
      "运行中（外部启动）"（external），日志页指向它的日志 —— 不能写"未启动"。
-
-退避与熔断的默认值（5s / 15s / 45s，10 分钟窗口内最多 3 次）与参考实现
-ComfyUI-Neo-Nodes 的桌面壳一致，测试里可以调小。
 """
 from __future__ import annotations
 
@@ -33,12 +39,9 @@ from collections import deque
 from . import jobobj, state
 
 #: 状态取值
-IDLE, STARTING, RUNNING, RESTARTING, STOPPING, HALTED, EXTERNAL = (
-    "idle", "starting", "running", "restarting", "stopping", "halted", "external")
+IDLE, STARTING, RUNNING, STOPPING, EXTERNAL = (
+    "idle", "starting", "running", "stopping", "external")
 
-BACKOFF_S = (5.0, 15.0, 45.0)      # 第 1/2/3 次重启前等多久
-WINDOW_S = 600.0                   # 数重启次数的窗口：10 分钟
-MAX_RESTARTS = 3                   # 窗口内最多自动重启几次，超过就熔断
 POLL_S = 1.0                       # 看子进程还活着没有
 PROBE_S = 2.0                      # 问 /health 的间隔
 WATCH_S = 2.0                      # 没有自己的进程时，多久看一眼端口上的外部服务
@@ -70,17 +73,13 @@ class Supervisor:
     """监督一个 serve/server.py 进程。所有公开方法都可以从 UI 线程调用。"""
 
     def __init__(self, adapter, port: int, host: str = "127.0.0.1", api_key: str = "",
-                 model_id: str = "", backoff=BACKOFF_S, window_s: float = WINDOW_S,
-                 max_restarts: int = MAX_RESTARTS, poll_s: float = POLL_S,
+                 model_id: str = "", poll_s: float = POLL_S,
                  probe_s: float = PROBE_S, watch_s: float = WATCH_S, on_event=None):
         self.adapter = adapter
         self.port = int(port)
         self.host = host
         self.api_key = api_key
         self.model_id = model_id
-        self.backoff = tuple(backoff)
-        self.window_s = float(window_s)
-        self.max_restarts = int(max_restarts)
         self.poll_s = float(poll_s)
         self.probe_s = float(probe_s)
         self.watch_s = float(watch_s)
@@ -90,7 +89,7 @@ class Supervisor:
         self.console_port: int | None = None
 
         self._lock = threading.RLock()
-        self._wake = threading.Event()          # 让退避等待能被"停止"打断
+        self._wake = threading.Event()          # 让盯端口的等待能被"停止"打断
         self._thread = None
         self._proc = None
         self._plan = None
@@ -103,9 +102,8 @@ class Supervisor:
 
         self.state = IDLE
         self.intent = "stop"                    # "run" = 用户要它跑着，"stop" = 用户要它停
-        self.restarts: list[float] = []
-        self.restart_number = 0
-        self.last_exit = None                   # {code, at, expected}
+        self.last_exit = None                   # {code, at, reason}：最近一次非预期退出
+        self._start_seq = 0                     # 用户按"启动"按到第几次了（盯端口那一层靠它认这次点击）
         self.diag = ""
         self.started_at = 0.0
         self.events: deque = deque(maxlen=200)
@@ -116,9 +114,11 @@ class Supervisor:
         """用户点"启动"。intent=run，监督线程跑起来。"""
         with self._lock:
             self.intent = "run"
+            self._start_seq += 1
             if model_id is not None:
                 self.model_id = model_id
             self.diag = ""
+            self.last_exit = None               # 用户点了"启动"：上次那条退出提示就该收掉
             if self._thread is None or not self._thread.is_alive():
                 self.state = STARTING if self.adapter.discover() else IDLE
                 self._thread = threading.Thread(target=self._loop, daemon=True, name="neo-supervisor")
@@ -147,15 +147,6 @@ class Supervisor:
             self._note("已停止（不会自动重启）")
         return self.status()
 
-    def retry(self) -> dict:
-        """熔断后的人工"重试"：清空重启计数，重新走一遍启动。"""
-        with self._lock:
-            self.restarts.clear()
-            self.restart_number = 0
-            self.diag = ""
-            self.last_exit = None
-        return self.start()
-
     def set_model(self, model_id: str) -> dict:
         """换模型：停掉当前的，用新配置启动。"""
         with self._lock:
@@ -174,11 +165,11 @@ class Supervisor:
         with self._lock:
             proc_alive = self._proc is not None and self._proc.poll() is None
             probe = dict(self._probe)
-            # 端口上有一个活着的服务、Neo 手里没有进程（脚本先起来的，或熔断后用户自己
-            # 起来的）：状态页要说"运行中（外部启动）"，不能写"未启动"。
+            # 端口上有一个活着的服务、Neo 手里没有进程（脚本先起来的，或服务停了之后用户
+            # 自己起来的）：状态页要说"运行中（外部启动）"，不能写"未启动"。
             external_live = bool(self._external.get("healthy")) and not proc_alive
             display = self.state
-            if external_live and self.state in (IDLE, STOPPING, HALTED):
+            if external_live and self.state in (IDLE, STOPPING):
                 display = EXTERNAL
             return {
                 "state": self.state,
@@ -201,10 +192,6 @@ class Supervisor:
                 "model_id": self.model_id,
                 "max_context": probe.get("max_context", 0),
                 "metrics": probe.get("metrics", {}),
-                "restarts": list(self.restarts),
-                "restart_number": self.restart_number,
-                "max_restarts": self.max_restarts,
-                "backoff": list(self.backoff),
                 "last_exit": self.last_exit,
                 "diagnosis": self.diag,
                 "log_path": self._log_path,
@@ -232,8 +219,16 @@ class Supervisor:
                 pass
 
     def _sleep(self, seconds: float) -> bool:
-        """可被"停止"打断的等待。被打断回 True。"""
-        return self._wake.wait(timeout=seconds)
+        """可被"停止"打断的等待。被打断回 True。
+
+        醒来就把标记收回去：`_wake` 是 set 一次就一直在的，不收回的话盯端口那一层的
+        `_sleep` 会立刻返回，那一层就变成一边忙等一边反复探活（监督线程占着 GIL，
+        测试里状态页的轮询都被拖慢）。
+        """
+        woke = self._wake.wait(timeout=seconds)
+        if woke:
+            self._wake.clear()
+        return woke
 
     def _close_log(self) -> None:
         """子进程结束后关掉它的日志句柄（反复重启不能攒下一堆没关的文件）。"""
@@ -283,8 +278,7 @@ class Supervisor:
             return False
         log_path = plan.log_path or str(_state.server_log_path(plan.model))
         try:
-            head = (f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 启动"
-                    f"（第 {self.restart_number} 次自动重启）=====\n$ {' '.join(plan.argv)}\n")
+            head = f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 启动 =====\n$ {' '.join(plan.argv)}\n"
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(head)
             log = open(log_path, "a", encoding="utf-8", buffering=1)
@@ -387,7 +381,7 @@ class Supervisor:
                     if probe.get("healthy"):
                         misses = 0
                         self._ready_deadline = 0.0
-                        if st in (STARTING, RESTARTING):
+                        if st == STARTING:
                             self.state = RUNNING
                             self._note(f"服务就绪：{probe.get('model')}"
                                        f" · 上下文 {probe.get('max_context')}")
@@ -404,61 +398,55 @@ class Supervisor:
             if proc is None and misses >= 3:
                 return {"code": None, "at": time.time(), "reason": "接手的服务不见了",
                         "tail": self.tail(4000)}
-            if st in (STARTING, RESTARTING) and deadline and time.time() > deadline:
+            if st == STARTING and deadline and time.time() > deadline:
                 tail = self.tail(4000)
                 self._kill_proc("加载超时")
                 return {"code": None, "at": time.time(), "reason": "加载超时", "tail": tail}
             self._sleep(self.poll_s)
 
-    def _schedule_restart(self, exit_info) -> bool:
-        """这次非预期退出该不该自动重启。要重启回 True（退避时间已等完）。"""
+    def _report_exit(self, exit_info) -> None:
+        """非预期退出：记下退出码与一句诊断，状态回到 idle，等用户点"启动"。
+
+        （2026-10-13 删了退避重启与熔断，理由见模块开头第 2 条。）
+        """
         now = time.time()
+        advice = diagnose(exit_info.get("tail", ""))
+        reason = exit_info.get("reason") or f"退出码 {exit_info.get('code')}"
         with self._lock:
-            self.restarts = [t for t in self.restarts if now - t < self.window_s]
-            self.restarts.append(now)
-            n = len(self.restarts)
-            self.restart_number = n
             self.last_exit = {"code": exit_info.get("code"), "at": now,
                               "reason": exit_info.get("reason", "")}
-        self._note(f"服务退出（{exit_info.get('reason') or '退出码 ' + str(exit_info.get('code'))}）",
-                   "warn")
-        advice = diagnose(exit_info.get("tail", ""))
-        with self._lock:
-            if n > self.max_restarts:
-                self.state = HALTED
-                self.diag = advice or "服务连续崩溃：看日志找原因，或换更小的模型"
-                self._note(f"{self.window_s / 60:.0f} 分钟内自动重启已达 {self.max_restarts} 次，"
-                           f"停止自动重启", "error")
-                return False
-            delay = self.backoff[min(n - 1, len(self.backoff) - 1)]
-            self.state = RESTARTING
-            if advice:
-                self.diag = advice
-                self._note(advice, "hint")
-            self._note(f"{delay:.0f} 秒后自动重启（第 {n}/{self.max_restarts} 次）", "warn")
-        self._sleep(delay)                       # 退避等待；期间用户点"停止"会立刻打断
-        with self._lock:
-            if self.intent != "run":
-                self.state = IDLE
-                return False
-        return True
+            self.state = IDLE
+            self.diag = advice or "服务停了：看日志找原因，或点「启动」重新起"
+        self._note(f"服务退出（{reason}）：已停止，点「启动」重新起", "warn")
+        if advice:
+            self._note(advice, "hint")
 
     def _watch_external(self) -> bool:
         """Neo 手里没有进程时盯端口：端口上有一个活着的服务（脚本先起来的），状态页
         就要说"运行中（外部启动）"，日志页指向它的日志，点启动时认下它。
 
         实测 2026-10-12 在 D:\\Work\\Strata：run-swift-iq3_xxs.bat 起的服务在 8080 上
-        正常应答 /health，Neo 熔断之后状态页写"未启动"、日志页是空的 —— 用户的话是
+        正常应答 /health，Neo 停着的时候状态页写"未启动"、日志页是空的 —— 用户的话是
         "我感觉已经启动了，只是日志没有看到，状态也不对"。
 
-        回 True：该回主循环（intent 要 run）；回 False：用户要它停着，线程收尾。
+        回 True：该回主循环（用户按了"启动"，或端口上出现活着的服务且用户要它跑着）；
+        回 False：用户要它停着，线程收尾。
         """
+        with self._lock:
+            start_seq = self._start_seq          # 进这一层时，用户按"启动"按到第几次了
         while True:
             with self._lock:
                 if self.intent == "stop":
                     self._external = {}
                     return False
                 if self._proc is not None and self._proc.poll() is None:
+                    return True
+                if self.intent == "run" and self._start_seq != start_seq:
+                    # 用户又按了一次"启动"（含服务崩了之后再按的那一次）：交回主循环去起进程。
+                    # 旧代码没有这一条：线程停在盯端口这一层出不去，"重试"点了等于没点
+                    # （2026-10-13 删退避重启时一起修，见 neo/tests/test_supervisor.py 的
+                    #  TestCrashStops.test_start_after_a_crash_starts_again）。
+                    self._external = {}
                     return True
             probe = self.adapter.probe(self.port, self.api_key)
             with self._lock:
@@ -492,9 +480,9 @@ class Supervisor:
             if not self._adopt():
                 if not self._launch():
                     with self._lock:
-                        self.state = HALTED
+                        self.state = IDLE
                     # 起不来（配置缺东西）也要继续盯端口：端口上可能有一个脚本起来的
-                    # 服务在跑，说"未启动"是骗人的
+                    # 服务在跑，说"未启动"是骗人的；要再起，得用户再点一次"启动"
                     if not self._watch_external():
                         return
                     continue
@@ -505,6 +493,9 @@ class Supervisor:
                 if self.intent != "run":
                     self.state = IDLE
                     return
-            if not self._schedule_restart(exit_info):
+            self._report_exit(exit_info)
+            # 崩了不自动拉起：记下退出与诊断就停着，但要继续盯端口 —— 端口上可能有一个
+            # 脚本起来的服务在跑，说"未启动"是骗人的（要再起，得用户点"启动"）
+            if not self._watch_external():
                 return
 

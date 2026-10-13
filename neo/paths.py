@@ -88,6 +88,8 @@ ENGINE_MARKERS = ("setup.py", "serve/server.py")
 ENGINE_DIR_NAME = "strata"
 #: 用户/脚本指一个引擎根目录的口子（与 --root 同一个意思，给 exe 双击时用）。
 ENGINE_ENV = "NEO_STRATA_ROOT"
+#: 引擎目录记在 neo/state/launcher.json 里的键名（用户在接入页点名，重启还在）。
+ENGINE_ROOT_KEY = "root"
 
 
 def app_root() -> Path:
@@ -111,22 +113,38 @@ def is_strata_root(path) -> bool:
     return all((p / marker).is_file() for marker in ENGINE_MARKERS)
 
 
-def strata_root(explicit: str = "", env=None, app=None) -> tuple[Path, str]:
+def remembered_root() -> str:
+    """用户在 neo/state/launcher.json 里记住的引擎目录（外置的、一键装好的 Strata）。
+
+    为什么在这里延迟 import state：state.py 在 import 时要用 paths，而这一条要读
+    state 的状态目录（exe 在只读目录里时它退到 %APPDATA%，那条判断只有 state 知道）。
+    state.py 里那一条 import 时算的 ROOT 已经改成 root() 现算，两边不会在 import
+    的半路上撞见对方。
+    """
+    from . import state
+    return str(state.engine_root() or "")
+
+
+def strata_root(explicit: str = "", env=None, app=None, remembered=None) -> tuple[Path, str]:
     """Strata 的根目录，加上"为什么是它"（这一句给页面、日志和向导看）。
 
-    顺序（3、4 都要目录里两样标记都在才认；1 与 2 是用户点名，照用不检查）：
+    顺序（4、5 都要目录里两样标记都在才认；1、2、3 是用户点名，照用不检查）：
 
         1. 显式给的 --root
         2. 环境变量 NEO_STRATA_ROOT
-        3. 应用目录本身        exe 放进 Strata 根目录时就是它（今天的行为，逐字节不变）
-        4. 应用目录/strata     Neo 的向导 clone 出来的那一份
-        5. 都没有             回应用目录，理由里写"这里还没有引擎"，向导会接手去装
+        3. 记住的引擎目录       neo/state/launcher.json 的 root（接入页「引擎目录」那一步写的）
+        4. 应用目录本身        exe 放进 Strata 根目录时就是它（今天的行为，逐字节不变）
+        5. 应用目录/strata     Neo 的向导 clone 出来的那一份
+        6. 都没有             回应用目录，理由里写"这里还没有引擎"，向导会接手去装
 
-    第 3 条排在第 4 条前面是刻意的：exe 在 Strata 根目录里时，第 3 条先命中，
-    老用户的路径与今天完全一样；只有 exe 单独放在一个空目录里才会走到第 4 条。
-    1 与 2 不检查标记：用户点名指哪儿就起哪儿，起不来由启动那一步明说（neo/engines/strata.py
+    第 4 条排在第 5 条前面是刻意的：exe 在 Strata 根目录里时，第 4 条先命中，
+    老用户的路径与今天完全一样；只有 exe 单独放在一个空目录里才会走到第 5 条。
+    1、2、3 不检查标记：用户点名指哪儿就起哪儿，起不来由启动那一步明说（neo/engines/strata.py
     找不到 serve/server.py 时报的是它自己的话），Neo 不偷偷换目录 —— 偷偷换目录会让用户
     以为自己跑的是那一台机器上的引擎。
+    第 3 条是 2026-10-13 加的外置引擎口子：一键装好的 Strata 在任意目录里，
+    记一次就长期用它，Neo 不再需要把引擎复制 / clone 到自己旁边（neo/engine_setup.py
+    的默认目标跟着这一条走）。
     """
     env = os.environ if env is None else env
     app = app_root() if app is None else safe_resolve(app)
@@ -135,6 +153,9 @@ def strata_root(explicit: str = "", env=None, app=None) -> tuple[Path, str]:
     from_env = str(env.get(ENGINE_ENV) or "")
     if from_env:
         return safe_resolve(from_env, app), f"环境变量 {ENGINE_ENV}"
+    remembered = remembered_root() if remembered is None else str(remembered or "")
+    if remembered:
+        return safe_resolve(remembered, app), f"记住的引擎目录（neo/state/launcher.json 的 {ENGINE_ROOT_KEY}）"
     if is_strata_root(app):
         return app, "Neo 就放在 Strata 的根目录里"
     checkout = app / ENGINE_DIR_NAME
@@ -142,3 +163,21 @@ def strata_root(explicit: str = "", env=None, app=None) -> tuple[Path, str]:
         return checkout, f"Neo 的向导装在这里（{app.name}/{ENGINE_DIR_NAME}/）"
     return app, (f"{app} 和 {checkout} 里都没有 setup.py + serve/server.py —— "
                  "这里还没有引擎，接入页的「引擎」那一步可以去装")
+
+
+
+def resolve_root(explicit: str = "") -> Path:
+    """命令行 `--root` 的默认值：给了就照用，没给就走 strata_root() 那一条规则。
+
+    与 strata_root() 的分工：那条是"程序运行时的根"（连"为什么是它"一起回），
+    这一条是命令行用的同一规则（显式值优先、不检查标记，与 --root 的语义一致）。
+    没给 --root 时，认的顺序就是 strata_root() 那六条，其中第 3 条是
+    neo/state/launcher.json 里记住的引擎目录 —— 外置的、一键装好的 Strata 记一次就长期用。
+    2026-10-13 拆仓库前，neo/wizard.py 与 neo/models.py 的默认根是硬写的
+    "neo/ 的上一层"——Neo 住在 Strata 检出里时那层就是 Strata 根，拆开后就变成
+    没有 setup.py 的仓库根（`neo.wizard --check` 因此报"这里不是 Strata 的根目录"，
+    还给出一条指向不存在的 <仓库根>/setup.py 的命令）。默认值只留这一条规则。
+    """
+    if explicit:
+        return safe_resolve(explicit)
+    return safe_resolve(strata_root()[0])

@@ -12,7 +12,7 @@ psutil / sentencepiece / huggingface-hub / safetensors / jinja2），装新包�
     GET  /app.js /style.css    页面资源（一律 no-store：壳是本地文件，缓存会挡住新界面）
     GET  /neo/status           壳与服务的状态快照
     GET  /neo/models           可启动的模型列表
-    POST /neo/start /stop /retry
+    POST /neo/start /stop
     POST /neo/model            换模型（重启服务）
     POST /neo/open             在浏览器里打开聊天页/监控页（页面里点"打开"就是这条）
     POST /neo/open-log         用系统默认方式打开服务日志
@@ -30,6 +30,11 @@ M2/M3 加的（默认没人点就什么都不发生，读接口不写任何文�
     POST /neo/connect          把一个 provider 写进 agent 的配置文件（先备份 .neo-bak）
     GET  /neo/wizard           安装向导现状（缺什么、建议的源、命令、日志尾部）
     POST /neo/wizard           跑 setup.py（后台线程，输出进 neo/state/logs/wizard.log）
+    GET  /neo/engine           引擎源码树现状（pin、状态、引擎目录是哪来的、清单、日志尾部）
+    POST /neo/engine           按 pin 装 / 对齐（后台线程，输出进 neo/state/logs/engine.log）
+    POST /neo/engine_root      {"action":"set|clear","root":...} 记住 / 忘掉引擎目录
+                               （写 launcher.json 的 root：用这台机器上别处一键装好的 Strata，
+                               Neo 不把引擎复制一份过来）
 
 模型页与模型设置页加的（读接口不写文件；写只写 neo/state/configs/）：
 
@@ -342,8 +347,6 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, sup.start(model_id=body.get("model")))
         elif path == "/neo/stop":
             self._json(200, sup.stop())
-        elif path == "/neo/retry":
-            self._json(200, sup.retry())
         elif path == "/neo/model":
             model = str(body.get("model") or "")
             if not model:
@@ -360,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.wizard_run(body))
         elif path == "/neo/engine":
             self._json(200, self.server.engine_run(body))
+        elif path == "/neo/engine_root":
+            self._json(200, self.server.engine_root_set(body))
         elif path == "/neo/install":
             self._json(200, self.server.model_install(body))
         elif path == "/neo/source":
@@ -463,6 +468,7 @@ class ConsoleServer:
         # 页面只看到 fetch 失败。加端点时这里必须一起加（neo/tests/test_console.py 钉着这条）。
         httpd.engine_status = self.engine_status
         httpd.engine_run = self.engine_run
+        httpd.engine_root_set = self.engine_root_set
         httpd.model_catalog = self.model_catalog
         httpd.model_install = self.model_install
         httpd.model_source = self.model_source
@@ -666,6 +672,8 @@ class ConsoleServer:
 
         只有 install / update 两个动作，都是用户点了才动：dirty 与 not_a_git_tree
         由 engine_setup 自己拒绝，Neo 不动用户改过的东西。
+        外置引擎目录（external_tag）要动它的 HEAD 得带 align:true —— 页面点「对齐到 pin」
+        就是它，命令行是 --align。
         """
         from . import engine_setup
         action = str(body.get("action") or "install")
@@ -681,9 +689,28 @@ class ConsoleServer:
                 model=str(body.get("model") or ""),
                 source=self._source_for(body),
                 setup=bool(body.get("setup", True)),
+                align=bool(body.get("align")),
                 wait=False)
         except engine_setup.EngineRefError as exc:
             return {"started": False, "error": str(exc)}
+
+    def engine_root_set(self, body: dict) -> dict:
+        """记住 / 忘掉引擎目录 —— 用这台机器上别处一键装好的 Strata，不复制目录。
+
+        写的是 neo/state/launcher.json 的 root（与 --root、NEO_STRATA_ROOT 同一个意思，
+        记下来长期用）。改完把引擎现状的缓存清掉：页面紧接着要显示新的那一份树。
+        """
+        from . import engine_setup
+        action = str((body or {}).get("action") or "set")
+        if action not in ("set", "clear"):
+            return {"ok": False, "error": f"不认识的动作：{action}（set / clear）"}
+        if action == "clear":
+            out = engine_setup.clear_engine_root()
+        else:
+            out = engine_setup.set_engine_root(str((body or {}).get("root") or ""))
+        with self._engine_lock:
+            self._engine_cache = None
+        return out
 
 
     def model_catalog(self, fresh: bool = False) -> dict:
@@ -799,9 +826,9 @@ class ConsoleServer:
         return out
 
     def _service_busy(self, st: dict) -> bool:
-        """服务此刻在不在跑（含别人启动的、启动中、停止中、自动重启中）—— 改了要重启的标记用。"""
+        """服务此刻在不在跑（含别人启动的、启动中、停止中）—— 改了要重启的标记用。"""
         return str(st.get("display_state") or st.get("state")) in (
-            "running", "starting", "restarting", "stopping", "external")
+            "running", "starting", "stopping", "external")
 
 
     def model_install(self, body: dict) -> dict:

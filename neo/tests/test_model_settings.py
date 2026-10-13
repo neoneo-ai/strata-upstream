@@ -24,7 +24,7 @@ from ._bootstrap import ENGINE, REPO                # noqa: E402
 
 ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
 
-from neo import gguf_meta, model_settings, state              # noqa: E402
+from neo import gguf_meta, model_settings, paths, state              # noqa: E402
 
 
 # ---------------- 一份最小的模型配置 ----------------
@@ -390,6 +390,42 @@ class TestGgufMeta(unittest.TestCase):
         meta = gguf_meta.read_meta(self.write("k.gguf", blob))
         self.assertEqual(meta["tensors"], 1)
         self.assertNotIn("truncated", meta)
+
+
+class TestCliRootAndConsole(OverlayCase):
+    """命令行那两头：`--root` 不给就走 neo/paths.py 的规则；打印进窄控制台不丢字。
+
+    编码这一条是实测出来的（2026-10-13，PowerShell 7，控制台 65001，locale cp936）：
+    输出直接进控制台时 Python 认 65001，中文是好的；一旦进管道或重定向，
+    sys.stdout.encoding 回落到 gbk，写出去的是 GBK 字节，按 UTF-8 读的那一头全是乱码。
+    neo/cli.py::wide_stdout() 就是把 stdout 钉成 UTF-8，这里造的就是那种窄控制台。
+    """
+
+    def test_default_root_is_empty_and_follows_the_rule(self):
+        self.assertEqual(model_settings.parse_args([]).root, "")
+        self.assertEqual(model_settings.resolve_root(""), paths.strata_root()[0])
+
+    def test_prints_survive_a_cp936_console(self):
+        """在 cp936 的字节控制台里跑 main：中文要按 UTF-8 读得回来，不能变问号。"""
+        import io
+
+        cfg = self.root / "strata-console.json"
+        cfg.write_text(json.dumps(base_cfg()), encoding="utf-8")
+        buffer = io.BytesIO()
+        wrapper = io.TextIOWrapper(buffer, encoding="cp936", errors="strict")
+        was = sys.stdout
+        sys.stdout = wrapper
+        try:
+            code = model_settings.main(["--root", str(self.root), "--model", "strata-console.json"])
+            wrapper.flush()
+            text = buffer.getvalue().decode("utf-8", errors="replace")
+        finally:
+            if sys.stdout is wrapper:
+                wrapper.close()
+            sys.stdout = was
+        self.assertEqual(code, 0, text)
+        self.assertIn("上下文", text)
+        self.assertNotIn("?", text.replace("strata-console.json", ""))
 
 
 if __name__ == "__main__":

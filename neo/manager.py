@@ -208,9 +208,6 @@ class Shell:
         """
         return self.sup.stop(join_s=0.5)
 
-    def retry(self):
-        return self.sup.retry()
-
     def set_model(self, model_id: str):
         return self.sup.set_model(str(model_id or ""))
 

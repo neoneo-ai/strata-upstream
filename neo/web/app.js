@@ -37,17 +37,17 @@ function tNum(s) {
   return t(text);
 }
 const STATE_TEXT = { idle: "未启动", starting: "启动中", running: "运行中",
-                     restarting: "自动重启中", stopping: "停止中", halted: "已停止（熔断）",
-                     external: "运行中（外部启动）" };
+                     stopping: "停止中", external: "运行中（外部启动）" };
 const ROUTES = {
   status: ["GET", "/neo/status"], models: ["GET", "/neo/models"], log: ["GET", "/neo/log"],
   config: ["GET", "/neo/config"], start: ["POST", "/neo/start"], stop: ["POST", "/neo/stop"],
-  retry: ["POST", "/neo/retry"], set_model: ["POST", "/neo/model"], save_config: ["POST", "/neo/config"],
+  set_model: ["POST", "/neo/model"], save_config: ["POST", "/neo/config"],
   open_page: ["POST", "/neo/open"], open_log: ["POST", "/neo/open-log"],
   lan: ["GET", "/neo/lan"], token: ["POST", "/neo/token"], net: ["GET", "/neo/net"],
   connect: ["GET", "/neo/connect"], connect_write: ["POST", "/neo/connect"],
   wizard: ["GET", "/neo/wizard"], wizard_run: ["POST", "/neo/wizard"],
   engine: ["GET", "/neo/engine"], engine_run: ["POST", "/neo/engine"],
+  engine_root_set: ["POST", "/neo/engine_root"],
   catalog: ["GET", "/neo/catalog"], install: ["POST", "/neo/install"],
   set_source: ["POST", "/neo/source"],
   upstream: ["GET", "/neo/upstream"], remote: ["GET", "/neo/remote"],
@@ -129,17 +129,15 @@ function render(s) {
   pill($("state-pill"), st);
   pill($("nav-state"), st);
   $("head-model").textContent = s.served_model || s.label || s.model || "";
-  $("btn-retry").classList.toggle("hidden", s.state !== "halted");
   $("btn-start").disabled = st === "running" || st === "starting";
-  $("btn-stop").disabled = st === "idle" || s.state === "halted";
-  // 蓝色的主按钮跟着"此刻能按的那个"走：服务在跑（含别人启动的、启动中、停止中、
-  // 自动重启中）就该是"停止"亮着；停着才是"启动"亮着；熔断了是"重试"。
+  $("btn-stop").disabled = st === "idle";
+  // 蓝色的主按钮跟着"此刻能按的那个"走：服务在跑（含别人启动的、启动中、停止中）
+  // 就该是"停止"亮着；停着才是"启动"亮着。
   // 以前 primary 写死在"启动"上，CSS 里又没有 :disabled，运行中看着仍是"启动"在等人点。
   const busy = st === "running" || st === "starting" || st === "stopping" ||
-               st === "restarting" || st === "external";
-  $("btn-start").classList.toggle("primary", !busy && s.state !== "halted");
+               st === "external";
+  $("btn-start").classList.toggle("primary", !busy);
   $("btn-stop").classList.toggle("primary", busy);
-  $("btn-retry").classList.toggle("primary", s.state === "halted");
 
   $("guide").classList.toggle("hidden", !!s.installed);
   const diag = s.diagnosis || "";
@@ -165,9 +163,10 @@ function render(s) {
   $("s-model").textContent = s.served_model || s.model || "—";
   $("s-port").textContent = `${s.host}:${s.port}` + (byOther ? t("（别人启动的，Neo 认下了它）") : "");
   $("s-pid").textContent = s.pid ? `${s.pid}${byOther ? t("（别人启动的）") : ""}` : "—";
-  $("s-restarts").textContent = s.state === "halted"
-    ? `${s.restarts.length}${t(" 次 · 已达上限 ")}${s.max_restarts}`
-    : `${s.restarts.length}${t(" 次 · 上限 ")}${s.max_restarts} · ${s.backoff.map((x) => x + "s").join("/")}`;
+  const le = s.last_exit;
+  $("s-exit").textContent = le
+    ? `${le.reason ? t(le.reason) : t("退出码 ") + le.code} · ${new Date(le.at * 1000).toLocaleTimeString()}`
+    : t("没有非预期退出");
   $("s-log").textContent = s.log_path || "—";
 
   const box = $("events");
@@ -214,7 +213,6 @@ $("guide-reload").onclick = poll;
 $("btn-refresh").onclick = poll;
 $("btn-start").onclick = async () => { const s = await act("start"); if (s) render(s); };
 $("btn-stop").onclick = async () => { const s = await act("stop"); if (s) render(s); };
-$("btn-retry").onclick = async () => { const s = await act("retry"); if (s) render(s); };
 
 // ---------------- 模型页 ----------------
 async function loadModels() {
@@ -237,7 +235,7 @@ async function loadModels() {
     // 服务此刻在不在跑（模型页每 5 秒跟着状态页一起刷，last 就是最近一次的 /neo/status）
     const st = last ? (last.display_state || last.state) : "idle";
     const busy = st === "running" || st === "starting" || st === "stopping" ||
-                 st === "restarting" || st === "external";
+                 st === "external";
     const btn = document.createElement("button");
     // 换模型走 supervisor.set_model：它自己先 stop 再 start，用户不用先按停止。
     // 但服务在跑时点它，正在跑的请求会被切断，所以按钮写"换过去"，鼠标上去说清楚它先停谁。
@@ -573,6 +571,12 @@ function renderEngine(e) {
     line.textContent = `${s.ok ? "✓" : "—"} ${s.name}：${s.text}`;
     box.append(line);
   });
+  $("engine-root").textContent = t("引擎目录：") + `${e.root || "?"} —— ${e.root_reason || ""}`;
+  const input = $("engine-root-input");
+  if (e.remembered && !input.value) input.value = e.remembered;
+  const align = $("engine-align");
+  align.classList.toggle("hidden", e.state !== "external_tag");
+  align.disabled = !!(e.run && e.run.running);
   engineCmd = e.clone_command || "";
   $("engine-cmd").textContent = `${e.tag || "?"} · ${(e.sha || "").slice(0, 12)} · ${e.state || "?"}：`
     + engineCmd;
@@ -651,6 +655,29 @@ $("engine-copy").onclick = async () => {
   const ok = await copyText(engineCmd);
   $("engine-copy").textContent = ok ? t("已复制") : t("复制失败");
   setTimeout(() => { $("engine-copy").textContent = t("复制 clone 命令"); }, 4000);
+};
+$("engine-align").onclick = async () => {
+  const res = await act("engine_run", { action: "install", align: true });
+  if (!res) return;
+  note(res.started ? t("引擎已在后台跑，输出进 neo/state/logs/engine.log")
+                   : (res.error || (res.notes || []).join("；")));
+  setTimeout(async () => { const e = await api("engine"); if (e && !e.error) renderEngine(e); }, 3000);
+};
+$("engine-root-set").onclick = async () => {
+  const dir = $("engine-root-input").value.trim();
+  const res = await act("engine_root_set", { action: "set", root: dir });
+  if (!res) return;
+  note((res.notes || [res.error]).join("；"));
+  const e = await api("engine", null, "?fresh=1");
+  if (e && !e.error) renderEngine(e);
+};
+$("engine-root-clear").onclick = async () => {
+  const res = await act("engine_root_set", { action: "clear" });
+  if (!res) return;
+  note((res.notes || [res.error]).join("；"));
+  $("engine-root-input").value = "";
+  const e = await api("engine", null, "?fresh=1");
+  if (e && !e.error) renderEngine(e);
 };
 
 // ---------------- 模型页：在跑的服务（Neo 代发上游只读端点）----------------

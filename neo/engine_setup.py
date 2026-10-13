@@ -13,6 +13,15 @@ GitHub 的 archive zip 是它现打包的，没有官方摘要，所以 zip_sha2
 拿到源码之后 Neo 不做任何编译、不装包、不下模型 —— venv、依赖、引擎二进制、模型全交给
 上游的 setup.py（neo/wizard.py 那条路：setup.py --yes --no-start）。
 
+引擎目录有两个形状，默认是前一个：
+
+    自己装    树不在 → clone 到 <应用目录>/strata，装完就是 Neo 自己的那一份
+    外置的    这台机器上别处一键装好的 Strata：python -m neo.engine_setup --set-root D:\\Work\\Strata
+              记一次（neo/state/launcher.json 的 root）就长期用它，Neo 不把引擎复制一份过来
+
+外置树 Neo 只检查不动：版本与 pin 不一样时报 external_tag，要切它的 HEAD 得显式 --align；
+它的脏检查只看跟踪文件的改动（Neo 自己的文件在那棵树里按设计就是 untracked）。
+
 plan() 是纯函数：不联网、不写文件，只说"现在该干什么"。状态：
 
     ready          树在、HEAD == pin、git 干净（按 zip 装的：摘要对上 + Neo 记过这一笔）
@@ -37,6 +46,7 @@ import zipfile
 from pathlib import Path
 
 from . import netprobe, paths, state, wizard
+from .cli import wide_stdout
 from .paths import safe_resolve
 
 REF_NAME = "engine_ref.json"
@@ -49,18 +59,8 @@ ZIP_SHA_HEX_LEN = 64
 REQUIRED_KEYS = ("url", "tag", "sha")
 
 
-def wide_stdout() -> None:
-    """把 stdout 换成装得下中文与替换符的编码（与 `neo/deploy.py` 里那条一样）。
-
-    `--ensure` 末尾打印 `engine.log` 的尾部：那份输出按 utf-8 读，读不到的字节变成
-    U+FFFD，而 Windows 控制台默认 cp936 装不下它 —— 2026-10-13 在 `neo/deploy.py` 上
-    实测崩过一次（`UnicodeEncodeError: 'gbk' codec can't encode character '\\ufffd'`），
-    这一条是同一处坑。测试里 stdout 常被换成 `StringIO`（没有 reconfigure），那条路原样不动。
-    """
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError, OSError):
-        pass
+#: wide_stdout() 在 neo/cli.py（打印中文的命令行共用），上面 import 进来。
+#: `--ensure` 末尾打印 engine.log 尾部时踩的是同一处坑（cli.py 的模块串里记着）。
 
 
 class EngineRefError(RuntimeError):
@@ -167,6 +167,7 @@ STATE_NEED_ZIP = "need_zip"
 STATE_CHECKOUT = "checkout_pin"
 STATE_DIRTY = "dirty"
 STATE_NOT_GIT = "not_a_git_tree"
+STATE_EXTERNAL = "external_tag"
 
 #: 每个状态要做什么（页面与终端都印这一句）
 STATE_ACTION = {
@@ -177,6 +178,8 @@ STATE_ACTION = {
     STATE_CHECKOUT: "git checkout --detach 到 pin 的 commit",
     STATE_DIRTY: "不动它：这里有人改过（部署闸门拒绝）",
     STATE_NOT_GIT: "不动它：这不是 git 树，也不是 Neo 按 zip 装的那一份",
+    STATE_EXTERNAL: ("外置引擎目录：版本与 pin 不一样，Neo 不动它的 HEAD —— "
+                     "要对齐就点「对齐到 pin」（命令行 --align）"),
 }
 
 
@@ -211,14 +214,81 @@ def zip_installed(dest, ref, installed=None) -> bool:
             and data.get("source") == "zip")
 
 
-def plan(dest=None, ref=None, git_ok=None, local_zip="", installed=None) -> dict:
-    """现在该干什么。只读：读 git 状态、算本地文件摘要，不联网、不写任何文件。"""
+def default_dest() -> Path:
+    """引擎源码树默认落在哪：解析出来的那一份根目录；还没有引擎时 <应用目录>/strata。
+
+    2026-10-13 之前这里只有 <应用目录>/strata 一个地方：Neo 住在用户一键装好的
+    Strata 检出里时，`--ensure` 会把同一份源码再 clone 到 <根>/strata 里 —— 用户
+    已经有引擎，Neo 又复制一份，两份还会各自漂移。现在默认就是 neo/paths.py 解析
+    出来的那一份（记住的外置引擎目录 / exe 所在目录 / <应用目录>/strata 都算），
+    谁在就用谁；只有哪份都没有时才 clone，clone 的落点仍是 <应用目录>/strata。
+    """
+    resolved, _why = paths.strata_root()
+    return resolved if paths.is_strata_root(resolved) else paths.engine_checkout()
+
+
+def is_neo_checkout(dest) -> bool:
+    """这棵树是 Neo 自己装的那一份吗（装在 <应用目录>/strata，或 Neo 记过来历）。
+
+    外置的引擎目录（用户一键装好的、别处的 Strata）不是：Neo 对它只做"看一眼"，
+    要动它的 HEAD 得用户显式说（--align）。脏检查也跟着分：Neo 自己 clone 的树
+    该是干净的，外置树里 Neo 的文件按设计就是 untracked（AGENTS.md：部署树不提交），
+    把它们算成脏会让换版闸门永远不过。
+    """
+    dest = Path(dest)
+    if dest == paths.engine_checkout():
+        return True
+    return str(read_engine_state().get("dest") or "") == str(dest)
+
+
+def own_text(dest) -> str:
+    """这一份引擎树是谁装的 —— 给页面与终端看的那一句话。"""
+    return ("Neo 自己装的（按 pin clone 或解压 zip）" if is_neo_checkout(dest)
+            else "外置引擎目录（Neo 起它、按 pin 检查它，版本要对齐得用户点头）")
+
+
+def set_engine_root(dir_path: str) -> dict:
+    """记住引擎目录：让 Neo 用这台机器上别处一键装好的 Strata，不复制目录。
+
+    写 neo/state/launcher.json 的 root（与 --root、NEO_STRATA_ROOT 同一个意思，
+    只是记下来长期用）。目录不存在就拒绝 —— 打错一个字母比记错一个目录难查得多。
+    """
+    if not str(dir_path or "").strip():
+        return {"ok": False, "notes": ["引擎目录是空的：给一个目录，或用 --clear-root 忘掉"]}
+    cand = paths.safe_resolve(dir_path, paths.app_root())
+    if not cand.is_dir():
+        return {"ok": False, "notes": [f"{cand} 不存在：Neo 不记一个找不到的目录"]}
+    state.save_engine_root(str(cand))
+    root, why = paths.strata_root()
+    notes = [f"记住的引擎目录：{cand}", f"现在 Neo 用的根目录：{root}（{why}）"]
+    if not paths.is_strata_root(cand):
+        notes.append(f"{cand} 里没有 setup.py + serve/server.py：起服务会失败，"
+                     "要换就再点一次，要 Neo 自己装就清除")
+    return {"ok": True, "root": str(root), "reason": why, "notes": notes,
+            "markers": paths.is_strata_root(cand)}
+
+
+def clear_engine_root() -> dict:
+    """忘掉记住的引擎目录，回到默认（Neo 自己按 pin 装）。"""
+    state.save_engine_root("")
+    root, why = paths.strata_root()
+    return {"ok": True, "root": str(root), "reason": why,
+            "notes": [f"已清除记住的引擎目录，现在用 {root}（{why}）"]}
+
+
+def plan(dest=None, ref=None, git_ok=None, local_zip="", installed=None, own=None) -> dict:
+    """现在该干什么。只读：读 git 状态、算本地文件摘要，不联网、不写任何文件。
+
+    own 不给就是"这棵树 Neo 自己装的吗"现问（is_neo_checkout）；测试里直接给，
+    省得为了造一棵"Neo 自己的树"去改真实的状态目录。
+    """
     ref = ref or load_ref()
-    dest = Path(dest) if dest else paths.engine_checkout()
+    dest = Path(dest) if dest else default_dest()
+    own = is_neo_checkout(dest) if own is None else bool(own)
     git_ok = git_available() if git_ok is None else bool(git_ok)
     out = {"state": "", "action": "", "dest": str(dest), "tag": ref["tag"], "sha": ref["sha"],
            "url": ref["url"], "archive": archive_url(ref), "git": git_ok, "head": "",
-           "zip_ok": False, "notes": []}
+           "own": own, "zip_ok": False, "notes": []}
 
     def done(state_name: str, note: str = "") -> dict:
         out["state"] = state_name
@@ -239,16 +309,22 @@ def plan(dest=None, ref=None, git_ok=None, local_zip="", installed=None) -> dict
         if zip_installed(dest, ref, installed):
             return done(STATE_READY, f"{dest} 是 Neo 按 zip 装的 {ref['tag']}"
                                      "（没有 git 元数据，闸门查的是 Neo 记的那一笔摘要）")
-        return done(STATE_NOT_GIT, f"{dest} 里没有 .git，Neo 也没记过它是按 zip 装的")
+        return done(STATE_NOT_GIT, f"{dest} 里没有 .git，Neo 也没记过它是按 zip 装的"
+                                   "（外置引擎目录照用：Neo 起它，只是不动它）")
     out["head"] = git_head(dest)
-    dirty = git_dirty(dest)
+    dirty = git_dirty(dest, tracked_only=not own)
     if dirty:
-        return done(STATE_DIRTY, "git status --porcelain 不空：这里有人改过，Neo 不动它")
+        return done(STATE_DIRTY, "git status --porcelain 不空：这里有人改过，Neo 不动它"
+                                 + ("" if own else "（外置目录只看跟踪文件的改动）"))
     if dirty is None:
         return done(STATE_DIRTY, "问不到 git 状态（git 跑不起来），按不干净处理")
     if out["head"] != ref["sha"]:
+        if not own:
+            return done(STATE_EXTERNAL, f"{dest} 是外置引擎目录：HEAD 是 {out['head'][:12]}，"
+                                         f"pin 是 {ref['sha'][:12]}")
         return done(STATE_CHECKOUT, f"HEAD 是 {out['head'][:12]}，pin 是 {ref['sha'][:12]}")
-    return done(STATE_READY, f"{dest} 就是钉住的 {ref['tag']}（{ref['sha'][:12]}），git 干净")
+    return done(STATE_READY, f"{dest} 就是钉住的 {ref['tag']}（{ref['sha'][:12]}），git 干净"
+                             + ("" if own else "（外置引擎目录）"))
 
 
 # ---------------- 本地 zip 那条路 ----------------
@@ -347,12 +423,15 @@ def github_reachable() -> tuple[bool, str]:
 
 
 def steps(dest=None, ref=None, local_zip="") -> list[dict]:
-    """给页面/终端看的清单：引擎源码这一步 + 交给 setup.py 的那一步。不写不跑。"""
+    """给页面/终端看的清单：引擎目录是哪来的 + 引擎源码这一步 + 交给 setup.py 的那一步。不写不跑。"""
     ref = ref or load_ref()
     p = plan(dest=dest, ref=ref, local_zip=local_zip)
     dest = Path(p["dest"])
     net_ok, net_text = github_reachable()
-    out = [{"name": "引擎源码", "ok": p["state"] == STATE_READY,
+    resolved, why = paths.strata_root()
+    out = [{"name": "引擎目录", "ok": paths.is_strata_root(dest),
+            "text": f"{dest}：{why}；{own_text(dest)}"},
+           {"name": "引擎源码", "ok": p["state"] == STATE_READY,
             "text": f"{p['state']}：{p['action']}；" + "；".join(p["notes"])},
            {"name": "取源码的路", "ok": bool(net_ok) or p["state"] == STATE_READY,
             "text": f"{net_text}；git {'在' if p['git'] else '不在'}；zip 退路 {p['archive']}"}]
@@ -369,8 +448,11 @@ def status(dest=None, ref=None, local_zip="") -> dict:
     ref = ref or load_ref()
     p = plan(dest=dest, ref=ref, local_zip=local_zip)
     items = steps(dest=dest, ref=ref, local_zip=local_zip)
+    resolved, why = paths.strata_root()
     return {"dest": p["dest"], "state": p["state"], "action": p["action"],
             "tag": ref["tag"], "sha": ref["sha"], "head": p["head"],
+            "root": str(resolved), "root_reason": why,
+            "remembered": paths.remembered_root(), "own": p["own"],
             "url": ref["url"], "archive": p["archive"], "git": p["git"],
             "clone_command": " ".join(clone_argv(ref, p["dest"])),
             "checkout_command": " ".join(checkout_argv(ref)),
@@ -378,23 +460,28 @@ def status(dest=None, ref=None, local_zip="") -> dict:
             "notes": p["notes"], "run": run_state(), "log_tail": log_tail(max_lines=40)}
 
 
+
 def run_engine(dest=None, ref=None, local_zip="", port: int = 0, host: str = "127.0.0.1",
                api_key: str = "", family: str = "", model: str = "", source: str = "",
-               setup: bool = True, wait: bool = True) -> dict:
+               setup: bool = True, wait: bool = True, align: bool = False) -> dict:
     """按 pin 把引擎源码树弄好，然后交给 setup.py。
 
     Neo 自己只做两件事：取源码（git clone 或解压摘要对上的 zip）、切到钉住的 commit。
     venv、依赖、引擎二进制、模型全在 setup.py 那边（neo/wizard.py 那条路）。
     dirty / not_a_git_tree 直接拒绝，不动用户的目录。
+    外置引擎目录（external_tag）要动它的 HEAD 得显式 align=True —— 那是用户自己的
+    检出，Neo 默认只检查不搬。
     """
     ref = ref or load_ref()
     p = plan(dest=dest, ref=ref, local_zip=local_zip)
     dest = Path(p["dest"])
+    move_external = align and p["state"] == STATE_EXTERNAL
 
     def worker() -> None:
         _mark(running=True, code=None, started_at=time.time(), state=p["state"],
               notes=list(p["notes"]), log=str(engine_log_path()), setup_log=str(wizard.wizard_log_path()))
-        if p["state"] in (STATE_DIRTY, STATE_NOT_GIT, STATE_NEED_ZIP):
+        if p["state"] in (STATE_DIRTY, STATE_NOT_GIT, STATE_NEED_ZIP) or (
+                p["state"] == STATE_EXTERNAL and not align):
             _log_line(f"拒绝：{p['state']} —— {p['action']}；{'；'.join(p['notes'])}")
             _mark(running=False, code=1)
             return
@@ -413,15 +500,19 @@ def run_engine(dest=None, ref=None, local_zip="", port: int = 0, host: str = "12
             if not result["ok"]:
                 _mark(running=False, code=1, notes=result["notes"])
                 return
-        elif p["state"] == STATE_CHECKOUT:
+        elif p["state"] in (STATE_CHECKOUT, STATE_EXTERNAL):
             argv = checkout_argv(ref)
-            _log_line(" ".join(argv))
+            _log_line(" ".join(argv) + ("" if not move_external else "（外置引擎目录，用户点了对齐）"))
             rc, out = git_run(argv, cwd=dest, timeout=GIT_TIMEOUT_S)
             _log_line(f"返回 {rc}\n{out[-4000:]}")
             if rc != 0:
                 _mark(running=False, code=rc, notes=[f"git checkout 没成功（返回 {rc}）"])
                 return
-            write_engine_state(dest=str(dest), sha=ref["sha"], tag=ref["tag"], source="git")
+            if p["own"]:
+                # 只给 Neo 自己装的树记来历：外置树记了就等于把它当自己的收进闸门，
+                # 那里 Neo 的文件按设计是 untracked，脏检查会变严，闸门永远过不去。
+                write_engine_state(dest=str(dest), sha=ref["sha"], tag=ref["tag"], source="git")
+
         if setup:
             _log_line(f"交给 setup.py：{wizard.setup_path(dest)} --yes --no-start")
             wizard.run_setup(dest, family=family, model=model, port=port, host=host,
@@ -443,14 +534,22 @@ def parse_args(argv=None):
 
     p = argparse.ArgumentParser(
         description="引擎源码树：按 neo/engine_ref.json 钉住的那一个 tag 装、对齐（然后交给 setup.py）")
-    p.add_argument("--dest", default="", help=f"引擎源码树放哪（默认 {paths.ENGINE_DIR_NAME}/）")
+    p.add_argument("--dest", default="",
+                   help=f"引擎源码树放哪（默认按 neo/paths.py 解析出来的那一份根目录；"
+                        f"没有引擎时 {paths.ENGINE_DIR_NAME}/）")
     p.add_argument("--ref", default="", help="pin 文件（默认 neo/engine_ref.json）")
+    p.add_argument("--set-root", default="", metavar="DIR",
+                   help="记住引擎目录（这台机器上别处一键装好的 Strata），写进 neo/state/launcher.json")
+    p.add_argument("--clear-root", action="store_true", help="忘掉记住的引擎目录，回到 Neo 自己装")
     p.add_argument("--zip", dest="zip_path", default="",
                    help="离线 zip：git 不可用时用它，SHA-256 必须与 pin 一致")
     p.add_argument("--check", action="store_true", help="只看现状（默认就是看现状）")
     p.add_argument("--ensure", action="store_true", help="按 pin 装 / 对齐，然后交给 setup.py")
     p.add_argument("--no-setup", action="store_true", help="只弄源码树，不跑 setup.py")
+    p.add_argument("--align", action="store_true",
+                   help="外置引擎目录的版本不是 pin 时，允许 Neo 把它的 HEAD 切到 pin")
     p.add_argument("--dry-run", action="store_true", help="只把要跑的命令打出来")
+
     p.add_argument("--json", action="store_true", help="出一份 JSON")
     p.add_argument("--family", default="", help="setup.py 的 --family")
     p.add_argument("--model", default="", help="setup.py 的 --model")
@@ -464,12 +563,17 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     wide_stdout()
     args = parse_args(argv)
+    if args.set_root or args.clear_root:
+        out = clear_engine_root() if args.clear_root else set_engine_root(args.set_root)
+        for note in out["notes"]:
+            print(f"  {note}")
+        return 0 if out["ok"] else 1
     try:
         ref = load_ref(args.ref or None)
     except EngineRefError as exc:
         print(f"pin 读不出来：{exc}")
         return 1
-    dest = safe_resolve(args.dest) if args.dest else paths.engine_checkout()
+    dest = safe_resolve(args.dest) if args.dest else default_dest()
     p = plan(dest=dest, ref=ref, local_zip=args.zip_path)
     if args.json:
         import json
@@ -477,6 +581,9 @@ def main(argv=None) -> int:
         print(json.dumps(status(dest=dest, ref=ref, local_zip=args.zip_path),
                          ensure_ascii=False, indent=1))
     else:
+        resolved, why = paths.strata_root()
+        print(f"== 引擎目录 {resolved}（{why}）")
+        print(f"   这一份是：{own_text(dest)}")
         print(f"== 引擎源码树 {dest}")
         print(f"   pin：{ref['tag']}（{ref['sha'][:12]}），{ref['url']}")
         print(f"   现在：{p['state']} —— {p['action']}")
@@ -494,7 +601,8 @@ def main(argv=None) -> int:
     result = run_engine(dest=dest, ref=ref, local_zip=args.zip_path, port=args.port,
                         host=args.host, api_key=args.api_key, family=args.family,
                         model=args.model, source=args.source, setup=not args.no_setup,
-                        wait=True)
+                        wait=True, align=args.align)
+
     code = int(result.get("code") or 0)
     print("== 结果")
     print(f"  {'成功' if code == 0 else '没成功（返回 ' + str(code) + '）'}")

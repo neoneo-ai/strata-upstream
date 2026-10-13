@@ -101,16 +101,13 @@ Object.assign(PHRASES, {
   '未启动': 'Idle',
   '启动中': 'Starting',
   '运行中': 'Running',
-  '自动重启中': 'Restarting',
   '停止中': 'Stopping',
-  '已停止（熔断）': 'Stopped (tripped)',
   '运行中（外部启动）': 'Running (external)',
   '提示：': 'Note:',
   '无详情': 'no details',
   '此刻能按的那个': 'whichever is available',
   '停止': 'Stop',
   '启动': 'Start',
-  '重试': 'Retry',
   '刷新': 'Refresh',
   '已用 / 总量': 'used / total',
   '排队 ': 'queued ',
@@ -120,9 +117,10 @@ Object.assign(PHRASES, {
   ' · 端口在听，还没应答': ' · port listening, no answer yet',
   '（别人启动的，Neo 认下了它）': ' (started by someone else, Neo adopted it)',
   '（别人启动的）': ' (started by someone else)',
-  ' 次 · 已达上限 ': ' restarts · limit reached ',
-  ' 次 · 上限 ': ' restarts · limit ',
-  ' 次退避 ': ' restarts, backoff ',
+  '退出码 ': 'exit code ',
+  '没有非预期退出': 'no unexpected exit',
+  '加载超时': 'load timed out',
+  '接手的服务不见了': 'the adopted service is gone',
 });
 
 // ---------------- 动态文案（模型页 / 安装 / 接入）----------------
@@ -314,7 +312,6 @@ Object.assign(BLOCKS, {
   'nav.settings': 'Settings',
   'h.start': 'Start',
   'h.stop': 'Stop',
-  'h.retry': 'Retry',
   'h.refresh': 'Refresh',
   'guide.h2': 'This machine has no model installed',
   'guide.p': 'Neo is the manager for Strata; a model has to be installed first. Open the ' +
@@ -336,7 +333,7 @@ Object.assign(BLOCKS, {
   'svc.model': 'Model',
   'svc.port': 'Port',
   'svc.pid': 'Process',
-  'svc.restarts': 'Auto-restart',
+  'svc.exit': 'Last exit',
   'svc.log': 'Log',
   'btn.chat': 'Open chat page',
   'btn.monitor': 'Open monitor page',
@@ -440,14 +437,22 @@ Object.assign(BLOCKS, {
   'wizard.copy': 'Copy the install command',
   'panel.engine': 'Engine source tree',
   'engine.run': 'Install the pinned engine',
+  'engine.align': 'Align to the pin',
   'engine.copy': 'Copy the clone command',
+  'engine.root.label': 'Use an engine directory installed elsewhere (the one-click install)',
+  'engine.root.set': 'Use this directory',
+  'engine.root.clear': 'Clear (Neo installs its own)',
   'engine.note': 'Neo only ever takes the source pinned in <code>neo/engine_ref.json</code> ' +
     '(<code>git clone --depth 1</code>; with no git it downloads the zip and unpacks it only ' +
     'when the SHA-256 matches the pin) into <code>strata/</code>. venv, dependencies, engine ' +
     'binaries and models all stay with the upstream <code>setup.py</code> - Neo installs none ' +
     'of them itself. Everything this page writes lands in <code>strata/</code> and ' +
     '<code>neo/state/</code>; no upstream file is touched, and Neo refuses to touch a tree ' +
-    'someone has modified (<code>dirty</code>).',
+    'someone has modified (<code>dirty</code>). A Strata that is already installed elsewhere ' +
+    'on this machine needs no copy: type its directory into the box and Neo remembers it ' +
+    '(<code>root</code> in <code>neo/state/launcher.json</code>) and uses it from then on; ' +
+    'when that tree is not on the pin Neo only says so - it never moves its HEAD, that takes ' +
+    'a click on <b>Align to the pin</b>.',
   'panel.settings': 'Launch settings',
   'set.port': 'Strata port',
   'set.host': 'Bind address',
@@ -487,6 +492,7 @@ Object.assign(PHRASES, {
   '覆盖配置：': 'Overlay config: ',
   '这份是 setup.py 写的原样：': 'Unchanged setup.py config: ',
   '已填上': 'Filled in',
+  '引擎目录：': 'Engine directory: ',
   '没找到局域网地址（这台机器没连上网？）': 'No LAN address found (is this machine offline?)',
 });
 

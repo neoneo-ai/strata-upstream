@@ -1,10 +1,12 @@
 # Neo Strata 桌面管理器
 
-Neo 是 Strata 的桌面管理层：一个窗口，管着模型的启动、停止、崩溃自动重启、日志和接入。
+Neo 是 Strata 的桌面管理层：一个窗口，管着模型的启动、停止、日志和接入（服务崩了 Neo 不自动
+重启，只记下退出码并给一句诊断，2026-10-13）。
 它住在 `neo/` 里，只通过上游已有的命令行参数、环境变量和 HTTP 端点与 Strata 打交道，
 **不修改仓库里的任何现有文件**，所以上游更新时 Neo 不会与之冲突。
 
-当前进度：**M1 完成**（桌面壳 + 进程监督 + 崩溃自动重启 + 状态/日志/聊天/监控页）。
+当前进度：**M1 完成**（桌面壳 + 进程监督 + 状态/日志/聊天/监控页；监督器不自动重启，见下面
+「监督器的行为」）。
 M2（安装向导与国内网络自动判断）、M3（局域网访问、token 与 Claude Code / Codex 接入）、
 M4（llama.cpp 引擎适配与打包）还没开始。
 
@@ -64,7 +66,7 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | 文件 | 作用 |
 | --- | --- |
 | `neo/manager.py` | 桌面壳：单实例互斥体（按根目录）、窗口几何持久化、pywebview 容器（**不挂 js_api**）、浏览器退回、`--force` |
-| `neo/supervisor.py` | 进程监督：启动、探活、退避重启、熔断、诊断、事件时间线 |
+| `neo/supervisor.py` | 进程监督：启动、探活、退出诊断、事件时间线（**不自动重启**，2026-10-13 删了退避与熔断） |
 | `neo/console_server.py` | 控制台服务（标准库 `http.server`）：页面 + JSON 接口；页面里所有动作的落点，含 `POST /neo/open` / `/neo/open-log` |
 | `neo/state.py` | 状态落点 `neo/state/`（启动设置、窗口几何、日志、`instance.json`），原子写 + `.bak`；exe 里状态落点见 `pick_state_dir()` |
 | `neo/paths.py` | 路径解析：`safe_resolve()` 不跟 Windows 重解析点（OneDrive 同步根的 `.SyncRoot`），深度封顶 64 段；`app_dir()` / `web_dir()` / `is_frozen()` 认 exe 与源码两种落点；`strata_root()` 一条规则认引擎根目录（见"根目录怎么认"）、`app_root()` / `engine_checkout()` |
@@ -78,13 +80,13 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/engine_setup.py` | 引擎源码树向导：按 `engine_ref.json` 的 pin `git clone --depth 1` 或解压摘要对上的 zip 到 `strata/`，`plan()` 回七个状态之一，之后交给 `setup.py`；命令行 `python -m neo.engine_setup --check \| --ensure [--zip 文件] [--json]` |
 | `neo/engine_ref.json` | 钉住的那一份引擎：`url` / `tag` / `sha` / `zip_sha256`（+ 字节数与一句话说明）。bump 就是改这一份 |
 | `neo/deploy.py` | 换版脚本：把开发树的 `neo/` + `NEO-START.bat` + `NeoStrata.exe` 写进部署树，先过引擎 / 路径 / 进程三道闸门，写完核对 SHA-256 并就地跑 `webcheck` 与快套件；默认 dry-run，`--apply` 才写 |
-| `neo/models.py` | 安装清单：ast 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表（不 import、不跑它）+ 这台机器（内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装（fits / tight / no）；命令行 `python -m neo.models --root . [--json]` |
+| `neo/models.py` | 安装清单：ast 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表（不 import、不跑它）+ 这台机器（内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装（fits / tight / no）；命令行 `python -m neo.models [--json]`（根目录不给就走 `neo/paths.py::resolve_root()`） |
 | `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
 | `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/webcheck.py` | 页面脚本体检：按 `index.html` 的加载顺序把页面当一个程序查（跨文件顶层重名、花括号配平、接线在不在顶层），`build_exe` 出包前的闸门；命令行 `python -m neo.webcheck` |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 492 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty，`test_deploy.py` 守换版闸门 |
+| `neo/tests/` | 523 个测试（见下）：`_bootstrap.py` 给出 `REPO` 与 `ENGINE`（引擎树 = `paths.strata_root()` 算的那个）与 `server_ready`（引擎的真服务起不动时，用真 `serve/server.py` 的测试跳过并说清缺哪个包），`test_paths.py` 守根目录规则，`test_engine_setup.py` 守 pin / clone / zip 摘要 / dirty / 外置引擎目录，`test_deploy.py` 守换版闸门，`test_harness.py` 守"30 秒时间标准"与那条跳过规则 |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -96,12 +98,21 @@ idle ──启动──> starting ──/health 应答──> running
                   │                        │
                   │ 加载超时                │ 子进程非预期退出
                   ▼                        ▼
-             restarting（退避 5 / 15 / 45 秒）
+             idle（记下退出码与一句诊断，等用户点「启动」）
                   │
-                  └── 10 分钟内已重启 3 次 ──> halted（熔断，等人工处理）
+                  └── 端口上出现活着的服务 ──> external（接手）
 ```
 
-- **用户点"停止"后绝不自动拉起**：`intent=stop` 是硬开关，退避等待会被它立刻打断。
+- **Neo 任何时候都不自动拉起**：用户点「停止」后不会（`intent=stop` 是硬开关）；服务崩了、
+  加载超时后也不会。**2026-10-13 删掉了退避重启与熔断**（原来是"退避 5 / 15 / 45 秒、
+  10 分钟内 3 次后熔断 halted、页面上给一个「重试」按钮"）。删它的理由是收益太小、麻烦太大：
+  模型重载本来归上游（下面那条「引擎重载不归 Neo」），Neo 这一层重启是重复劳动；麻烦都量过 ——
+  这条链路是全套件最慢的一格（`TestCrashRestart` 14.7 秒，全跑 18.3 秒里的八成），引擎依赖缺失时
+  它把整张退避表跑完（全跑从 18.3 秒变 5 分钟），熔断还让状态页在端口上有活着的服务时写"未启动"。
+  现在崩了只做三件事：记下退出码（状态页「上次退出」那一行）、给一句诊断、在事件里写
+  "已停止，点「启动」重新起"。顺带修了一个旧 bug：监督线程停在盯端口那一层（`_watch_external`）
+  出不去，熔断后点「重试」等于没点；现在那一层认得"用户又点了一次启动"（`_start_seq`），
+  崩了之后点启动真的会再起（`TestCrashStops.test_start_after_a_crash_starts_again`）。
 - **探活分三层**：端口在听（TCP）→ `/health` 应答（服务活着）→ `loaded`（模型已加载）。
   模型加载要几分钟，这段时间 Neo 显示"启动中"，不算失败。
 - **探活的节奏：进程死活按 `poll_s` 看，`/health` 按 `probe_s` 问**（2026-10-13 改）。之前是
@@ -109,13 +120,14 @@ idle ──启动──> starting ──/health 应答──> running
   只在两轮之间看一眼 —— 子进程崩了要等这一轮探活跑完才看得见。实测 2026-10-13 本机
   （`neo/tests/probes/probe_cost.py`，杀掉服务后逐层计时）：监听被杀掉后 Windows 把那个端口黑洞化
   （SYN 没人回，不是 RST），一次探活 1.21 + 2.02 + 2.02 = 5.25 秒，用户看到的就是"进程已经崩了，
-  状态页还写着运行中，自动重启晚 5 秒才开始"。TCP 那一层的超时从 1.2 秒收到 0.25 秒（回环上连
+  状态页还写着运行中，自动重启晚 5 秒才开始"（那时还有自动重启；现在崩了不重启，这条计时量的
+  是"多久看得见它死了"）。TCP 那一层的超时从 1.2 秒收到 0.25 秒（回环上连
   一个活着的监听是 0.00 秒，同一脚本实测），发现退出从 2.06 秒到 **0.02 秒**、启动到就绪从
   1.82 秒到 **0.61 秒**（`neo/tests/probes/supervisor_events.py`：读监督器自己记的事件时间戳）。
 - **引擎重载不归 Neo**：`serve/server.py` 自己会重启引擎（`StrataEngine.restart`，issue #344），
   Neo 只在事件里显示一条提示，不干预。
 - **端口上已有活着的服务就接手**：用户先用 `START-HERE.bat` 起来了，Neo 认下它，不重复启动。
-  Neo 自己起不来（配置缺东西、熔断）时也一样：盯端口那一层探到活着的服务就交回主循环去接手
+  Neo 自己起不来（配置缺东西）时也一样：盯端口那一层探到活着的服务就交回主循环去接手
   （`_watch_external` 在 `intent=run` 时回 True）。之前只有"运行中（外部启动）"这个显示，没有交回
   这一步，Neo 就永远停在"外部启动"、点启动不会接手 —— 2026-10-13 把 TCP 超时从 1.2 秒收到
   0.25 秒后 `test_adopt_shows_config_log` 才暴露这件事：那 1.2 秒正好是给外部服务的启动窗口，
@@ -126,8 +138,9 @@ idle ──启动──> starting ──/health 应答──> running
   46984 → 绑上 8080 的 45868，后两条命令行一模一样；单独启动那个 venv 的 python.exe，
   启动它回 42016、真正跑脚本的是它的孩子 42388。`jobobj.is_descendant` 就是干这件事的：
   按"监听者不是我孩子就是外人的服务"写，会把 Neo 自己正在应答的服务判成外人的并杀掉它。
-- **熔断给一句能照着做的提示**：从日志尾部认 `out of memory` / `failed to map` /
-  `page file` / `already in use` / `driver is too old` 等，措辞对齐 `docs/TROUBLESHOOTING.md`。
+- **退出给一句能照着做的提示**：从日志尾部认 `out of memory` / `failed to map` /
+  `page file` / `already in use` / `driver is too old` 等，措辞对齐 `docs/TROUBLESHOOTING.md`；
+  认不出就给一句"服务停了：看日志找原因，或点「启动」重新起"。
 
 ## 控制台接口
 
@@ -208,8 +221,9 @@ POST /neo/model/settings     写覆盖配置 neo/state/configs/strata-<id>.neo.j
 点「安装」= `POST /neo/install` = 后台跑 `setup.py --yes --no-start --family X --model Y`，
 输出进 `neo/state/logs/wizard.log`，页面在模型页时每 5 秒刷一次清单与日志尾部。Neo 不自己下载：
 下载、校验、写 `strata-*.json` 全是 `setup.py` 的事；菜单里没有这一项、或已经有一个安装在跑，
-接口都挡回来并说明原因，不起子进程。命令行同一条路：`python -m neo.models --root .`（`--json` 出
-机器可读的那份）看清单，`python -m neo.wizard --family coder --model IQ1_M` 装。
+接口都挡回来并说明原因，不起子进程。命令行同一条路：`python -m neo.models`（根目录不给就走
+`neo/paths.py::resolve_root()`；`--json` 出机器可读的那份）看清单，
+`python -m neo.wizard --family coder --model IQ1_M` 装。
 
 清单下面那一排是**下载源**：`自动（按探测）` / `Hugging Face 官方` / `ModelScope 国内` /
 `hf-mirror 镜像`，选了就 `POST /neo/source` 记住（`neo/state/source.json`），命令预览立刻跟着变。
@@ -688,19 +702,19 @@ python -m neo.webcheck           # 体检 neo/web/，不干净非零退出
 - `neo/web/style.css` 里**一条 `:disabled` 样式都没有** —— 按钮被禁用后长得跟能按时一模一样，
   而 `button.primary` 的蓝色写死在"启动"上（`index.html` 里带的 class，页面从不换），
   于是运行中的页面读起来就是"该点启动"。
-- 禁用判断本身是对的（`btn-start` 在 running/starting 时禁用，`btn-stop` 只在 idle 与 halted 时禁用），
+- 禁用判断本身是对的（`btn-start` 在 running/starting 时禁用，`btn-stop` 只在 idle 时禁用），
   纯样式问题。
 
 修法：主按钮的蓝色跟着"此刻能按的那个"走 —— `app.js` 的 `render()` 里
-`running / starting / stopping / restarting / external` 时点亮**停止**，停着时点亮**启动**，
-熔断时点亮**重试**；`style.css` 补 `button:disabled`（`opacity .42` + `not-allowed`）与
+`running / starting / stopping / external` 时点亮**停止**，停着时点亮**启动**；
+`style.css` 补 `button:disabled`（`opacity .42` + `not-allowed`）与
 `button.primary:disabled`（退回灰底、灰字），禁用一眼看得出来。
 
 修完实测（同一探针、同一截图尺寸）：`state=running` 时右上角是**停止**亮蓝、**启动**发灰。
 
 回归测试：`test_ui.py` 的 `TestHeaderActionButtons`（3 个）—— CSS 里要有 `button:disabled` 与
-`button.primary:disabled`；`btn-start` / `btn-stop` / `btn-retry` 三个都要 `toggle("primary")`；
-`btn-stop` 的禁用条件里不许出现 `running` / `external` / `restarting` / `stopping`（在跑就该能停）。
+`button.primary:disabled`；`btn-start` / `btn-stop` 两个都要 `toggle("primary")`；
+`btn-stop` 的禁用条件里不许出现 `running` / `external` / `stopping`（在跑就该能停）。
 
 ## 模型页的"启动它"：跑着的时候点它会发生什么
 
@@ -709,13 +723,14 @@ python -m neo.webcheck           # 体检 neo/web/，不干净非零退出
 **不用先停。** `set_model`（`neo/supervisor.py:156`）就是"记下新模型 + `stop()` + `start()`"——
 Neo 自己把当前服务停掉、用新模型重新起。实测 2026-10-12（mock 真进程，
 `neo/tests/test_supervisor.py` 的 `TestSetModel`）：running 时调用它，进程号换了、状态回到
-running，`restart_number` 仍是 0 —— 用户主动换模型不占退避次数、不推熔断。
+running，`last_exit` 是空的 —— 用户主动换模型不算一次非预期退出，状态页的「上次退出」那一行
+不会因此亮起。
 
 代价是**正在跑的请求会被切断**（`stop()` 给完优雅退出窗口就杀整个子进程树）。以前按钮只写
 "启动它"，跑着和停着长得一模一样，看不出点下去会发生什么。现在写清楚：
 
 - 当前模型：按钮"正在用"，禁用；
-- 服务在跑（running / starting / stopping / restarting / external）：按钮"换过去"，
+- 服务在跑（running / starting / stopping / external）：按钮"换过去"，
   鼠标上去是"会先停掉当前服务（正在跑的请求会被切断），再用「模型名」重新起"；
 - 停着：按钮"启动它"，提示"用「模型名」起服务"；模型文件不在的一律禁用。
 
@@ -802,11 +817,18 @@ python -m neo.build_exe --dest D:\Work\Strata
   引擎闸门 OK（HEAD `a0116b2782a5` == pin），进程闸门被 `instance.json` 记的 pid 7276 挡住，
   清单是 new 7、same 26、update 30，并当场报出部署树里多出来的一个 `neo/test_ui.py`
   （旧同步留下的，`--prune` 会删）—— 只同步 `.py` 漏掉 `neo/web/` 那一类坑就是这么露出来的。
-- **控制台打印**：`neo/deploy.py` 与 `neo/engine_setup.py` 的 `main()` 先调 `wide_stdout()`，
+- **控制台打印**：打印中文的命令行 `main()` 先调 `wide_stdout()`（共用那一份在 `neo/cli.py`），
   把 stdout 改成 UTF-8（`errors="replace"`）。2026-10-13 实测：`python -m neo.engine_setup --ensure`
   在 cp936 控制台上崩在打印那一步（`UnicodeEncodeError: 'gbk' codec can't encode character '\ufffd'`）——
   git 的输出按 UTF-8 解，解出来的替换字符 `U+FFFD` 是 GBK 编码不了的。现在这两条 CLI 在 cp936 控制台上
   把那一行打成 `git : fatal: ...`，退出码 1，不再崩。
+  同一天量到第二种：输出进管道（`| Select-Object`、重定向进文件、测试里捕获）时 `sys.stdout.encoding`
+  从控制台的 65001 回落到 locale 的 gbk，写出去的是 GBK 字节，按 UTF-8 读的那一头整片是乱码
+  （`python -m neo.wizard --check` 直接跑在控制台里是好的，加管道就花；同一条命令 `-X utf8` 是好的）。
+  2026-10-13 起 `wizard` / `models` / `model_settings` / `connect` / `start` 的 `main()` 也调它，
+  `neo/tests/test_deploy.py::TestWideStdoutShared` 钉"七个命令行是同一个函数、`cli.py` 里只有一份
+  `reconfigure`"，`neo/tests/test_model_settings.py::TestCliRootAndConsole` 在 cp936 的字节控制台里
+  跑一遍 `main()`，读回来必须是 UTF-8 的中文。
 - **部署 = 换 `NeoStrata.exe` + 同步 `neo/` 的源码与页面**。exe 里打的是开发树的 `neo/`；
   在部署树里跑源码（`python -m neo.manager`、`python -m neo.models`、跑测试）用的是部署树的 `neo/`，
   两边都要跟上。2026-10-13 实测踩过这个坑：只同步 `.py`、没同步 `neo/web/`，部署树的源码版页面
@@ -846,22 +868,32 @@ python -m neo.deploy --to D:\Work\Strata --apply --prune      # 真写，并删�
 ## 测试
 
 ```
-python -m neo.tests.run_all --quick --skip-network   # 开发时：十六个模块，10.2 秒
-python -m neo.tests.run_all                          # 换版前：十九个模块，含克隆那条
+python -m neo.tests.run_all --quick --skip-network   # 开发时：十七个模块，9.6 秒
+python -m neo.tests.run_all                          # 换版前：二十个模块，含克隆那条
 python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串行
 ```
 
-496 个测试（Windows 11，Python 3.13.15，起真实进程，不需要 GPU、不需要装好的模型、不碰真实用户配置；
+523 个测试（Windows 11，Python 3.13.15，起真实进程，不需要 GPU、不需要装好的模型、不碰真实用户配置；
 唯一真联网的是 `test_engine_setup.TestRunAndPage` 那条克隆路径）。跑法是 `python -m neo.tests.run_all`：
 它把每个模块切成测试类、按类并行（默认 4 个并发）、每个类报秒数，并把失败的类单独重跑一次——并发下的
-端口/负载抖动要和真失败分开。2026-10-13 本机实测：**`--skip-network` 时墙上 18.8 秒 / 488 个用例，
-带克隆那条 29.2 秒**；同样的单元串行相加是 71.1 秒，而 19 个模块一条 `python -m unittest` 跑是
-1067.1 秒 = 17.8 分钟（492 个测试，这是并行之前的数）。`--quick` 是开发时跑的十六个模块（不起真进程）：
-**墙上 10.2 秒 / 401 个用例**。`--skip-network` 摘掉的那条克隆路径在同一台机器同一天量到 6.8 秒与
-145.3 秒——全量套件的墙上时间跟着网络走，所以它单独成一个开关。
+端口/负载抖动要和真失败分开。**时间标准（2026-10-13）：跑测试必须报时间，单元与套件的墙上时间都按 30 秒
+封顶**——`run_all.py` 里的 `BUDGET_S` 就是这条标准，`--timeout` 的默认值是它，超预算的单元报
+`OK(超预算)`、整跑判失败；超过 30 秒要优化，不是把超时调大。2026-10-13 本机实测（删掉退避重启之后，
+同一台机器）：**`--quick --skip-network` 墙上 9.6 秒 / 435 个用例 / 86 个单元**，**`--skip-network`
+墙上 17.1 秒 / 523 个用例 / 101 个单元**（最慢的两个单元 5.7 秒 `test_models.TestCatalog` 与
+5.1 秒 `test_supervisor.TestCrashStops`；删退避之前最慢的是 `TestCrashRestart` 14.7 秒 —— 杀四次进程、
+走完整条退避，全跑 18.3 秒）。同样的单元串行相加是 66.1 秒，而 19 个模块一条 `python -m unittest`
+跑是 1067.1 秒 = 17.8 分钟（492 个测试，
+这是并行之前的数）。`--skip-network` 摘掉的那条克隆路径在同一台机器同一天量到 6.8 秒与 145.3 秒——它跟着
+链路走，30 秒的标准下全跑就摘掉它，要看那条就单独跑那一类并放宽 `--timeout`。
+
+引擎的真服务起不动时（引擎根目录的 `.venv` 没装上游的包），用真 `serve/server.py` 的那几条自己跳过并
+说清缺哪个包：`_bootstrap.py::server_ready` 用 ast 读它的 import，毫秒级、不起进程。实测 2026-10-13：
+缺 `jinja2` 时那个进程 import 就死，监督器按退避一遍遍重启、测试把等待跑满，全跑从 18.3 秒变成 5 分钟；
+`test_harness.py` 钉着这条跳过规则与上面的时间标准。
 
 监督器的测试驱动 `neo/tests/mock_server.py`（stdlib 小服务，按 Neo 读的形状答 `/health` 与 `/metrics`），
-作为真子进程跑在真端口上：启动、就绪、杀掉、自动重启、退避、熔断全是真的。起进程 0.27 秒，
+作为真子进程跑在真端口上：启动、就绪、杀掉、停着并给出诊断、点启动再起全是真的。起进程 0.27 秒，
 `serve/server.py --engine mock` 也是 0.27 秒，小服务省掉的是"第一次答 `/health`"要的那 3.5 秒。
 `TestStartAndReady.test_start_to_running` 用真的 `serve/server.py --engine mock`：要验的是"上游的就绪行
 真的进了日志"，那是 Neo 与上游的接缝，不能让假服务替它作证。
@@ -878,9 +910,14 @@ python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串�
 1.2→0.25 秒，被监督的进程换成 `neo/tests/mock_server.py`。按类并行后最慢的两个类：
 `TestCrashRestart` 29.3→**7.0** 秒、`TestExternalService` 42 秒（并发下偶发失败）→**2.6** 秒——
 删掉一个用例都没用，慢的是"发现进程死了"要等一轮探活跑完。
+（这一格后来改成了 `TestCrashStops`：退避删了之后 5.1 秒。慢的原因也顺手修了——`_wake` 是
+set 一次就一直在的，盯端口那一层的 `_sleep` 于是立刻返回，那一层变成一边忙等一边反复探活，
+监督线程占着 GIL，测试里状态页的轮询都被拖慢；`_sleep` 醒来把标记收回去，同一格从 12.2 秒到
+5.0 秒，2026-10-13 本机实测。）
 
-- `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
-  10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、
+- `test_supervisor`：启动到就绪、事件记录、非预期退出后**不自动重启**（记下退出码 + 一句诊断 +
+  事件里写"已停止，点「启动」重新起"）、崩了停着之后点「启动」真的再起一个进程、用户停止后不被
+  拉起、接手已在运行的服务、诊断关键词、
   **状态页的 metrics 真是数字**（真进程：`requests` 是累计条数，值里不许有列表/对象）。
 - `test_engines`：配置发现与排序（`setup.py` 的 `touch()` 语义）、启动命令只用上游已有参数、
   模型文件缺失拒绝启动、没有配置时的引导态、mock 适配器；**真实配置的形状**（扁平 `args`、模型在
@@ -897,7 +934,7 @@ python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串�
   **`test_the_monitor_channel_needs_no_upstream_change` 盯的是反过来的事**：`serve/server.py` 里不许出现
   本机豁免补丁的标记（`loopback_peer`、`_authorized(self, monitor: bool = False)`、`_authorized(monitor=True)`），
   而监控页与那些只读端点必须还在 —— 监控页靠 Neo 的 `/strata/` 通道读数据，不靠改上游。
-- `test_console`：状态接口、静态页 no-store、起不来的引擎停在 halted、外站 Origin 与外站 Host 403、
+- `test_console`：状态接口、静态页 no-store、起不来的引擎停着并给出原因（不自动重启）、外站 Origin 与外站 Host 403、
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
   浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）；
@@ -989,14 +1026,14 @@ python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串�
   给了 `--key` 就不写 key 缓存；`--base` 压过 `--host`/`--port`（写进 `config.toml` 的 `base_url`
   用的是它）；key 来源要说出来、服务没设 key 时要提醒；`--persist` 只写临时目录里那两个文件、
   每个都留 `.neo-bak` 且备份是用户原来那份、跑两遍 `[model_providers.neo]` 只有一块。
-- `test_paths`（19 个）：根目录那一条规则逐条钉住 —— 两个标记（`setup.py` + `serve/server.py`）都要在、
+- `test_paths`（30 个）：根目录那一条规则逐条钉住 —— 两个标记（`setup.py` + `serve/server.py`）都要在、
   标记表就是 Neo 真跑的那两个文件、**引擎树不许叫 `engine/`**（那是上游放引擎二进制的目录名）、
   `--root` 压过一切且不做标记检查、`NEO_STRATA_ROOT` 压过应用目录、应用目录有标记时压过 `<app>/strata`、
   应用目录是空的才用 `<app>/strata`、哪都没有时回应用目录并在理由里写"这里还没有引擎"且监督器的默认值
   照样能用、`NEO_STRATA_ROOT` 原样照用、相对路径按应用目录解析；`test_real_tree_today` 与
   `test_manager_default_root_matches` / `test_state_root_matches` 钉住今天这台机器：新规则算出的根
   与 `manager` / `state` 原来各自算的**逐字节相同**（exe 放进 Strata 根目录时第 3 条先命中）。
-- `test_engine_setup`（36 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
+- `test_engine_setup`（48 个）：`engine_ref.json` 的形状（缺键 / 坏 SHA / 坏 zip 摘要 / 不是字典都抛，
   archive 地址就是那个 tag 的 zip）；`clone_argv` 是 `--depth 1 --single-branch --branch <tag>`
   且落到 `strata/`、`checkout` 是 detach 到钉住的 SHA；`plan()` 七个状态各钉一条
   （`clone` / `zip_copy` / `need_zip` / `not_a_git_tree` / `checkout_pin` / `dirty` / `ready`），
@@ -1006,7 +1043,7 @@ python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串�
   `--zip` 那条路装完并记下来历；`status()` 的形状就是页面读的；命令行 `--dry-run` 只打印命令不写文件、
   `--json` 是 JSON、pin 读不出来说人话；`--ensure` 在 cp936 控制台上打印带 `U+FFFD` 的 git 输出不崩
   （`wide_stdout()`）。要 git 的用例在没 git 的机器上带理由跳过。
-- `test_deploy`（26 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
+- `test_deploy`（29 个）：三道闸门各钉一条 —— 引擎（HEAD == pin 且干净才过；HEAD 不是 pin 挡；
   跟踪文件脏挡；**没有 git 不算干净**；**部署树里 Neo 自己的 untracked 文件不算脏**）、
   路径（`neo/state/`、`__pycache__/`、`build/`、`dist/` 不带走；exe 不在源码清单里；
   每个文件分 new / update / same；目标里多出来的文件要报出来）、进程（缺 exe 挡、在跑的实例挡）；
@@ -1019,6 +1056,10 @@ python -m neo.tests.run_all --no-split --jobs 1      # 老用法：按模块串�
   `.gitignore` 逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
   和真控制台一样能 `reconfigure`），打印带 `U+FFFD` 的行 —— 不宽化就抛 `UnicodeEncodeError`，
   宽化后按 UTF-8 读回来是 `git : fatal: ...`。
+- `test_harness`（7 个）：测试自己的两条规矩 —— 时间标准（`run_all.BUDGET_S` 就是 30 秒、`--timeout`
+  的默认值就是它、跑完必报秒数与"超预算"那一行）与那条跳过规则（引擎的真服务 import 不动时
+  `server_ready` 说清缺哪个包并给出 `requirements.txt`，纯标准库的 import 不算缺，没有引擎的目录
+  说"没有引擎"，当前引擎根要么起得来要么给原因，不许"起不来也没话说"）。
 - `test_console` 里的 `TestEngineEndpoint`（6 个）：`GET /neo/engine` 回页面要读的 13 个键、
   三步的名字、两条路由接在 `console_server.py` 里、认不得的 action 挡回来、
   `install` 走后台线程（`wait=False`，点一下不能把请求线程堵几十分钟）且 `setup=True`

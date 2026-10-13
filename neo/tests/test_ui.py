@@ -376,14 +376,14 @@ class TestHeaderActionButtons(unittest.TestCase):
         self.assertIn("not-allowed", self.css)
 
     def test_primary_follows_the_actionable_button(self):
-        for btn in ("btn-start", "btn-stop", "btn-retry"):
+        for btn in ("btn-start", "btn-stop"):
             self.assertIn(f'$("{btn}").classList.toggle("primary"', self.js,
                           f"{btn} 的蓝色没跟着「此刻能按的那个」走")
 
     def test_stop_is_enabled_while_the_service_is_up(self):
         line = [ln for ln in self.js.splitlines() if '$("btn-stop").disabled =' in ln]
         self.assertTrue(line, "app.js 里没有 btn-stop 的禁用判断")
-        for state in ('"running"', '"external"', '"restarting"', '"stopping"'):
+        for state in ('"running"', '"external"', '"stopping"'):
             self.assertNotIn(state, line[0], f"服务在跑（{state}）时「停止」必须是能按的")
 
 
@@ -410,7 +410,7 @@ class TestModelPageSwitch(unittest.TestCase):
         self.assertIn("btn.disabled = cur || !m.installed", self.js)
 
     def test_busy_covers_every_running_state(self):
-        for state in ('"running"', '"starting"', '"stopping"', '"restarting"', '"external"'):
+        for state in ('"running"', '"starting"', '"stopping"', '"external"'):
             self.assertIn(state, self.js, f"busy 的判断里少了 {state}")
 
 

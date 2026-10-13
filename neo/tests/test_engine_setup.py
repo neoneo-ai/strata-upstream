@@ -26,7 +26,7 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
     __package__ = "neo.tests"
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
-from neo import engine_setup, netprobe, state       # noqa: E402
+from neo import engine_setup, netprobe, paths, state       # noqa: E402
 
 FAKE_URL = "https://github.com/Niko1221/Strata"
 
@@ -70,6 +70,15 @@ def make_git_tree(base: Path) -> str:
     run("add", "-A")
     if run("-c", "user.email=neo@test", "-c", "user.name=neo", "commit", "-q", "-m", "init")[0]:
         return ""
+    return engine_setup.git_head(base)
+
+
+def make_second_commit(base: Path) -> str:
+    """在 make_git_tree 那棵树上再提交一次，回新的 HEAD（旧的那个 commit 还在，能切回去）。"""
+    (base / "第二版.txt").write_text("第二个 commit\n", encoding="utf-8")
+    engine_setup.git_run(["git", "add", "-A"], cwd=base)
+    engine_setup.git_run(["git", "-c", "user.email=neo@test", "-c", "user.name=neo",
+                          "commit", "-q", "-m", "second"], cwd=base)
     return engine_setup.git_head(base)
 
 
@@ -256,7 +265,8 @@ class TestPlan(StateDirBase):
     @NEEDS_GIT
     def test_tree_at_another_commit_wants_checkout(self):
         head = make_git_tree(self.tmp / "strata")
-        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True)
+        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True,
+                              own=True)
         self.assertEqual(p["state"], engine_setup.STATE_CHECKOUT)
         self.assertEqual(p["head"], head)
 
@@ -265,12 +275,124 @@ class TestPlan(StateDirBase):
         """脏树优先报 dirty：HEAD 对不对都轮不到它 —— Neo 不动用户的改动。"""
         make_git_tree(self.tmp / "strata")
         (self.tmp / "strata" / "本地改动.txt").write_text("用户的改动\n", encoding="utf-8")
-        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True)
+        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True,
+                              own=True)
         self.assertEqual(p["state"], engine_setup.STATE_DIRTY)
 
     def test_plan_default_dest_is_the_app_strata(self):
         p = engine_setup.plan(ref=make_ref(), git_ok=True)
         self.assertEqual(Path(p["dest"]), REPO / "strata")
+
+
+class TestExternalRoot(StateDirBase):
+    """外置引擎目录：这台机器上别处一键装好的 Strata，Neo 用它、不复制它、不擅自搬它的 HEAD。
+
+    外置树与 Neo 自己 clone 的那一份的三点差别，全在这里钉住：
+    版本对不上时报 external_tag（不是 checkout_pin）；脏检查只看跟踪文件的改动
+    （Neo 自己的文件在那棵树里按设计就是 untracked）；要动它的 HEAD 得显式 align。
+    """
+
+    @NEEDS_GIT
+    def test_external_tree_at_another_commit_is_not_moved(self):
+        head = make_git_tree(self.tmp / "strata")
+        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True,
+                              own=False)
+        self.assertEqual(p["state"], engine_setup.STATE_EXTERNAL)
+        self.assertEqual(p["head"], head)
+        self.assertIn("align", p["action"], "要说清怎么才允许动它")
+
+    @NEEDS_GIT
+    def test_external_tree_with_neos_untracked_files_is_ready(self):
+        """部署树里 Neo 的文件是 untracked（AGENTS.md：那边不提交）：不能因此说它脏。"""
+        head = make_git_tree(self.tmp / "strata")
+        (self.tmp / "strata" / "NeoStrata.exe").write_text("exe\n", encoding="utf-8")
+        (self.tmp / "strata" / "neo").mkdir()
+        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha=head), git_ok=True,
+                              own=False)
+        self.assertEqual(p["state"], engine_setup.STATE_READY, p["notes"])
+
+    @NEEDS_GIT
+    def test_external_tree_with_a_modified_tracked_file_is_dirty(self):
+        make_git_tree(self.tmp / "strata")
+        (self.tmp / "strata" / "setup.py").write_text("用户改了上游文件\n", encoding="utf-8")
+        p = engine_setup.plan(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40), git_ok=True,
+                              own=False)
+        self.assertEqual(p["state"], engine_setup.STATE_DIRTY)
+
+    @NEEDS_GIT
+    def test_run_refuses_an_external_tree_without_align(self):
+        head = make_git_tree(self.tmp / "strata")
+        out = engine_setup.run_engine(dest=self.tmp / "strata", ref=make_ref(sha="c" * 40),
+                                      setup=False, wait=True)
+        self.assertEqual(out["code"], 1)
+        self.assertEqual(engine_setup.git_head(self.tmp / "strata"), head, "HEAD 一个字都没动")
+        self.assertIn("拒绝", engine_setup.log_tail(max_lines=40))
+
+    @NEEDS_GIT
+    def test_align_moves_an_external_tree_to_the_pin(self):
+        first = make_git_tree(self.tmp / "strata")
+        make_second_commit(self.tmp / "strata")
+        out = engine_setup.run_engine(dest=self.tmp / "strata", ref=make_ref(sha=first),
+                                      setup=False, wait=True, align=True)
+        self.assertEqual(out["code"], 0, out.get("notes"))
+        self.assertEqual(engine_setup.git_head(self.tmp / "strata"), first,
+                         "外置树切到 pin 的那个 commit（用户点了对齐才动）")
+
+    @NEEDS_GIT
+    def test_aligning_an_external_tree_does_not_make_it_neos_own(self):
+        """对齐完不记来历：记了就等于把用户的检出当自己的收进闸门，脏检查会变严。"""
+        first = make_git_tree(self.tmp / "strata")
+        make_second_commit(self.tmp / "strata")
+        engine_setup.run_engine(dest=self.tmp / "strata", ref=make_ref(sha=first),
+                                setup=False, wait=True, align=True)
+        self.assertFalse(engine_setup.is_neo_checkout(self.tmp / "strata"))
+
+    def test_set_and_clear_remembered_root(self):
+        state.LAUNCHER = state.STATE / "launcher.json"
+        out = engine_setup.set_engine_root(str(self.tmp))
+        self.assertTrue(out["ok"], out["notes"])
+        self.assertEqual(paths.remembered_root(), str(paths.safe_resolve(self.tmp)))
+        cleared = engine_setup.clear_engine_root()
+        self.assertTrue(cleared["ok"])
+        self.assertEqual(paths.remembered_root(), "")
+
+    def test_set_root_refuses_a_directory_that_is_not_there(self):
+        out = engine_setup.set_engine_root(str(self.tmp / "没这个目录"))
+        self.assertFalse(out["ok"])
+        self.assertIn("不存在", out["notes"][0])
+        self.assertEqual(paths.remembered_root(), "")
+
+    def test_set_root_says_when_the_markers_are_missing(self):
+        (self.tmp / "bare").mkdir()
+        out = engine_setup.set_engine_root(str(self.tmp / "bare"))
+        self.assertTrue(out["ok"])
+        self.assertIn("setup.py", " ".join(out["notes"]), "要说明这一份起不来服务")
+
+    def test_default_dest_follows_the_remembered_root(self):
+        """记了外置目录，--ensure 的默认目标就是它：Neo 不再往 <应用目录>/strata 复制一份。"""
+        state.LAUNCHER = state.STATE / "launcher.json"
+        make_engine_tree(self.tmp)
+        engine_setup.set_engine_root(str(self.tmp))
+        self.assertEqual(engine_setup.default_dest(), paths.safe_resolve(self.tmp))
+        engine_setup.clear_engine_root()
+        self.assertEqual(engine_setup.default_dest(), REPO / paths.ENGINE_DIR_NAME)
+
+    def test_status_carries_the_root_and_why(self):
+        data = engine_setup.status(dest=self.tmp / "strata", ref=make_ref())
+        for key in ("root", "root_reason", "remembered", "own"):
+            self.assertIn(key, data, f"引擎卡要读 {key}")
+        self.assertEqual([x["name"] for x in data["steps"]][0], "引擎目录")
+
+    def test_cli_set_and_clear_root(self):
+        state.LAUNCHER = state.STATE / "launcher.json"
+        code, out = quiet(["--set-root", str(self.tmp)])
+        self.assertEqual(code, 0, out)
+        self.assertIn("记住的引擎目录", out)
+        code, out = quiet(["--clear-root"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("已清除", out)
+
+
 
 
 class TestZipGate(StateDirBase):
@@ -367,11 +489,12 @@ class TestRunAndPage(StateDirBase):
         make_engine_tree(self.tmp / "strata")
         data = engine_setup.status(dest=self.tmp / "strata", ref=make_ref())
         for key in ("dest", "state", "action", "tag", "sha", "head", "url", "archive",
-                    "git", "clone_command", "checkout_command", "steps", "ready",
+                    "git", "root", "root_reason", "remembered", "own",
+                    "clone_command", "checkout_command", "steps", "ready",
                     "notes", "run", "log_tail"):
             self.assertIn(key, data, f"页面要读 {key}")
         self.assertEqual([x["name"] for x in data["steps"]],
-                         ["引擎源码", "取源码的路", "交给 setup.py"])
+                         ["引擎目录", "引擎源码", "取源码的路", "交给 setup.py"])
         self.assertFalse(data["ready"], "源码没到位时不能报 ready")
 
     def test_cli_dry_run_prints_the_commands_and_writes_nothing(self):

@@ -26,7 +26,6 @@ from .console_io import clean_line
 from .paths import safe_resolve
 
 NEO_DIR = safe_resolve(Path(__file__).parent)
-ROOT = paths.strata_root()[0]                   # Strata 的根目录（规则见 neo/paths.py）
 STATE = NEO_DIR / "state"
 LOGS = STATE / "logs"
 LAUNCHER = STATE / "launcher.json"
@@ -191,14 +190,24 @@ def latest_server_log() -> Path | None:
     return files[-1][1] if files else None
 
 
+def root() -> Path:
+    """Strata 的根目录（规则见 neo/paths.py 的 strata_root()）。
+
+    为什么是函数、不在 import 时算成一个 ROOT：strata_root() 要读 launcher.json 里
+    记住的引擎目录，读它靠的就是本模块；import 时调用等于让 paths 在 state 还没定义完
+    的半路上回头调它（neo/tests/test_paths.py 的 TestWiring 钉的是"现算出来要一样"）。
+    """
+    return paths.strata_root()[0]
+
+
 def python_executable(root: Path | None = None) -> str:
     """跑 Strata 用的 Python：setup.py 建的 .venv 优先，没有就用当前解释器。
 
     exe 里 sys.executable 就是 NeoStrata.exe 自己，拿它当"Python"等于让 Neo
     一遍遍启动 Neo 自己，所以 exe 跑时只认 .venv 与系统里的 python，找不到就把话说清。
     """
-    root = Path(root) if root else ROOT
-    for cand in (root / ".venv" / "Scripts" / "python.exe", root / ".venv" / "bin" / "python"):
+    base = Path(root) if root else root()
+    for cand in (base / ".venv" / "Scripts" / "python.exe", base / ".venv" / "bin" / "python"):
         if cand.exists():
             return str(cand)
     if not paths.is_frozen():
@@ -210,12 +219,29 @@ def python_executable(root: Path | None = None) -> str:
             return str(found)
     raise FileNotFoundError(
         "没找到跑 Strata 用的 Python：这个 exe 需要 Strata 目录里的 .venv"
-        f"（{root / '.venv'}）—— 在 Strata 目录跑一次 START-HERE.bat 就有了")
+        f"（{base / '.venv'}）—— 在 Strata 目录跑一次 START-HERE.bat 就有了")
 
 
 def launcher_config() -> dict:
     cfg = read_json(LAUNCHER, {}) or {}
     return cfg if isinstance(cfg, dict) else {}
+
+
+# ---------------- 记住的引擎目录（外置的、一键装好的 Strata） ----------------
+def engine_root() -> str:
+    """用户在接入页/命令行记住的引擎目录（launcher.json 的 root）。
+
+    记一次就长期用：这台机器上别处一键装好的 Strata 直接当引擎，Neo 不把引擎
+    复制 / clone 到自己旁边。没记过回空串，等于"按 neo/paths.py 那一条规则自己找"。
+    """
+    return str(launcher_config().get(paths.ENGINE_ROOT_KEY) or "")
+
+
+def save_engine_root(root: str) -> str:
+    """记下引擎目录（写 launcher.json，旧内容留 .bak）。传空就是清除，回到默认。"""
+    value = str(root or "")
+    save_launcher_config(**{paths.ENGINE_ROOT_KEY: value})
+    return value
 
 
 # ---------------- 正在跑的这一个实例（第二个实例要说清它在哪儿） ----------------

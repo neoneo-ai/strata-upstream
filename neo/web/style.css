@@ -77,8 +77,7 @@ button.hidden, .hidden { display: none; }
   background: var(--bg3); color: var(--idle); border: 1px solid var(--line);
 }
 .pill.running { color: var(--ok); border-color: var(--ok-line); }
-.pill.starting, .pill.restarting { color: var(--warn); border-color: var(--warn-line); }
-.pill.halted { color: var(--err); border-color: var(--err-line); }
+.pill.starting { color: var(--warn); border-color: var(--warn-line); }
 /* 端口上有一个脚本先起来的服务：也是"在跑"，颜色与运行中一致，文字里说清是谁启动的 */
 .pill.external { color: var(--ok); border-color: var(--ok-line); }
 .pill.warn { color: var(--warn); border-color: var(--warn-line); }

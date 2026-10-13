@@ -24,6 +24,15 @@ offers the same steps as tools.
 
 ## Neo desktop manager (`neo/`)
 
+> **Neo's own development repo is split out (2026-10-13): `neoneo-ai/neo-strata`** (local
+> `D:\Work\projects\neostrata`), carrying the 19 commits that touched `neo/`, `docs/NEO_DESKTOP.md` and
+> `NEO-START.bat` (replayed with `git am`, messages/authors/dates kept; the tree is byte-identical -
+> compared by blob hash). This fork is the upstream-tracking and PR base: upstream-side changes
+> (`serve/`, `setup.py`) stay here, and Neo development happens in the other repo. `neo/` here stays
+> deployable, so the suite must stay green in both shapes: in a Neo-only repo the engine root is
+> `<repo>/strata` (`python -m neo.engine_setup --ensure` clones the pinned tag there), and
+> `neo/tests/_bootstrap.py` is what separates `REPO` from `ENGINE`.
+
 `neo/` is an additive desktop layer (window shell, process supervisor, crash auto-restart, status/logs/chat/monitor
 pages). It talks to Strata only through existing CLI flags, env vars and HTTP endpoints, and keeps all its own state
 under `neo/state/` - it changes no upstream file. Details, the restart/backoff rules, the single-instance rules and

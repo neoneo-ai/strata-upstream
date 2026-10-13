@@ -97,7 +97,7 @@ class TestHostAndKey(CliBase):
         self.assertEqual(out.getvalue(), "")        # 已有 key 就不再生成、不打印
 
     def test_port_priority(self):
-        adapter = make_adapter("mock", ROOT)
+        adapter = make_adapter("mock", ENGINE)
         self.assertEqual(manager.pick_port(manager.parse_args(["--port", "8123"]), adapter), 8123)
         state.save_launcher_config(port=8321)
         self.assertEqual(manager.pick_port(manager.parse_args([]), adapter), 8321)
@@ -108,7 +108,7 @@ class TestHostAndKey(CliBase):
 
 class TestConnectBlock(CliBase):
     def _block(self, agent, **kw):
-        adapter = make_adapter("mock", ROOT)
+        adapter = make_adapter("mock", ENGINE)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             manager.print_connect_block(adapter, 8080, kw.pop("host", "127.0.0.1"),

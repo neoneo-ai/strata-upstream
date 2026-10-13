@@ -20,7 +20,7 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
 
-ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
+ROOT = ENGINE                                       # setup.py 住在引擎根目录里（拆开 Neo 之后是 <repo>/strata）
 
 from neo import netprobe, state, wizard                              # noqa: E402
 

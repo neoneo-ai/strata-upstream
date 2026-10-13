@@ -18,7 +18,7 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
 
-ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根（Neo 自己的文件）
 
 from neo import jobobj, state                                          # noqa: E402
 from neo.engines.mock import MockEngine                        # noqa: E402
@@ -288,8 +288,8 @@ class TestAdopt(SupervisorBase):
         """端口上已有活着的服务（用户先用 START-HERE.bat 起来了）：认下它，不重复启动。"""
         import subprocess
         port = free_port()
-        proc = subprocess.Popen([state.python_executable(ROOT), str(ROOT / "serve" / "server.py"),
-                                 "--engine", "mock", "--port", str(port)], cwd=str(ROOT),
+        proc = subprocess.Popen([state.python_executable(ENGINE), str(ENGINE / "serve" / "server.py"),
+                                 "--engine", "mock", "--port", str(port)], cwd=str(ENGINE),
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)
@@ -378,8 +378,8 @@ class TestExternalService(unittest.TestCase):
     def start_server(self, port):
         """脚本先起来的那个服务：Neo 不认识它，Neo 也没启动它。"""
         import subprocess
-        proc = subprocess.Popen([state.python_executable(ROOT), str(ROOT / "serve" / "server.py"),
-                                 "--engine", "mock", "--port", str(port)], cwd=str(ROOT),
+        proc = subprocess.Popen([state.python_executable(ENGINE), str(ENGINE / "serve" / "server.py"),
+                                 "--engine", "mock", "--port", str(port)], cwd=str(ENGINE),
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)

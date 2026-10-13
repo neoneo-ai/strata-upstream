@@ -104,6 +104,24 @@ def free_port() -> int:
     return port
 
 
+def wait_listening(port: int, timeout: float = 30.0) -> bool:
+    """等端口上真的在听了，再去监督它。
+
+    接手类的测试起的是上游的 serve/server.py。在 Neo 单独的仓库里那一棵树是刚按 pin
+    clone 出来的（<repo>/strata），第一次 import 要过 Windows 杀毒扫描：实测 2026-10-13
+    同一条 TestAdopt 在 4 路并发下 0.6 秒就判失败、单独重跑就过——不是监督器接不住，
+    是端口那时候还没开始听。
+    """
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def dead_pid() -> int:
     """一个"确实开不出句柄"的进程号：跑一个立刻退出的子进程，把它的 pid 交出去。
 
@@ -298,6 +316,7 @@ class TestAdopt(SupervisorBase):
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)
+        self.assertTrue(wait_listening(port), f"{port} 上该有一个在听的服务")
         sup = self.make()
         sup.port = port
         sup.start()
@@ -388,6 +407,7 @@ class TestExternalService(unittest.TestCase):
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         self.addCleanup(proc.kill)
+        wait_listening(port)          # 端口在听了再让 Neo 去接手（原因见 wait_listening）
         return proc
 
     def temp_root(self, prefix):

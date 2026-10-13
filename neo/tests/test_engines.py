@@ -14,7 +14,7 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
 
 from ._bootstrap import ENGINE, REPO                # noqa: E402
 
-ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根（Neo 自己的文件）
 
 from neo.engines import make_adapter                           # noqa: E402
 from neo.engines.base import EngineAdapter, STRATA_MONITOR_PATH, flatten_metrics, metric_num      # noqa: E402
@@ -186,7 +186,7 @@ class TestPlan(unittest.TestCase):
         (self.tmp / "strata-x.json").write_text(json.dumps(cfg), encoding="utf-8")
         self.assertEqual(self.adapter.log_path_for("strata-x.json"),
                          str(self.tmp / "strata-x.log"))
-        self.assertEqual(make_adapter("mock", ROOT).log_path_for("mock"), "",
+        self.assertEqual(make_adapter("mock", ENGINE).log_path_for("mock"), "",
                          "没有 log 键就是没有，不要编一个路径出来")
 
     def test_pages(self):
@@ -215,7 +215,8 @@ class TestPlan(unittest.TestCase):
                          "http://127.0.0.1:8080/#monitor")
 
     def test_mock_adapter(self):
-        plan = make_adapter("mock", ROOT).plan(8095)
+        # 引擎根目录：mock 跑的是那一棵树里的 serve/server.py（拆开 Neo 之后它在 strata/ 里）
+        plan = make_adapter("mock", ENGINE).plan(8095)
         self.assertEqual(plan.argv[plan.argv.index("--engine") + 1], "mock")
         self.assertEqual(plan.argv[plan.argv.index("--port") + 1], "8095")
         self.assertTrue(Path(plan.argv[1]).exists(), "mock 跑的是仓库里的 serve/server.py")

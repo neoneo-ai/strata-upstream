@@ -19,9 +19,9 @@ if __package__ in (None, ""):                       # 直接跑 python neo/tests
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "neo.tests"
 
-from ._bootstrap import ENGINE, REPO                # noqa: E402
+from ._bootstrap import ENGINE, REPO, has_engine, no_engine_reason   # noqa: E402
 
-ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根
+ROOT = REPO                                         # 老写法留下的名字：Neo 仓库的根（Neo 自己的文件）
 
 from neo import models, state                                          # noqa: E402
 
@@ -340,10 +340,18 @@ class TestSources(unittest.TestCase):
 
 
 class TestRealSetup(unittest.TestCase):
-    """真的 setup.py：只读不跑。上游改了模型表，这里要说出来，别等页面空了才发现。"""
+    """真的 setup.py：只读不跑。上游改了模型表，这里要说出来，别等页面空了才发现。
+
+    读的是引擎根目录（_bootstrap.ENGINE）里的 setup.py，不是 Neo 仓库的根：拆开之后
+    Neo 仓库里没有 setup.py，引擎住在仓库根下的 strata/（neo/paths.py 的第 4 条）。
+    """
+
+    def setUp(self):
+        if not has_engine():
+            self.skipTest(no_engine_reason())
 
     def test_the_real_install_menu_is_readable(self):
-        models_tbl, families = models.read_tables(ROOT)
+        models_tbl, families = models.read_tables(ENGINE)
         self.assertIn("IQ3_S", models_tbl)
         self.assertIn("IQ2_XS", models_tbl)
         self.assertIn("IQ1_M", models_tbl)
@@ -351,7 +359,7 @@ class TestRealSetup(unittest.TestCase):
         self.assertIn("unsloth", families)
 
     def test_the_real_catalog_has_the_documented_sizes(self):
-        data = models.catalog(ROOT, installed=[])
+        data = models.catalog(ENGINE, installed=[])
         keys = {(e["family"], e["model"]) for e in data["models"]}
         for pair in (("qwen", "IQ3_S"), ("qwen", "IQ2_XS"), ("qwen", "Q2_0"),
                      ("coder", "IQ1_M"), ("swift", "IQ3_XXS"), ("unsloth", "UD-IQ4_XS")):
@@ -374,7 +382,7 @@ class TestRealSetup(unittest.TestCase):
         self.assertEqual(len(coder), 1, "32 GB 那档要说得出 Coder 这个选项")
 
     def test_the_real_machine_line_is_readable(self):
-        data = models.catalog(ROOT, installed=[])
+        data = models.catalog(ENGINE, installed=[])
         self.assertIn("内存", data["machine"]["note"])
         self.assertTrue(data["recommendation"]["why"])
 

@@ -147,9 +147,17 @@ class TestAppRoot(unittest.TestCase):
         self.assertEqual(paths.ENGINE_ENV, "NEO_STRATA_ROOT")
 
     def test_real_tree_today(self):
-        """今天这份开发树：引擎根目录就是仓库根（exe 与源码都放在 Strata 根目录里）。"""
+        """今天这份开发树：引擎根目录就是仓库根（exe 与源码都放在 Strata 根目录里）。
+
+        Neo 拆成单独的仓库之后形状变了：仓库根里没有 setup.py + serve/server.py，
+        引擎住在仓库根下的 strata/（第 4 条）。两种形状都认，认的是同一条规则。
+        """
         root, why = paths.strata_root()
-        self.assertEqual(root, REPO)
+        if paths.is_strata_root(REPO):
+            self.assertEqual(root, REPO, "开发树里 Neo 就住在引擎根目录里")
+        else:
+            self.assertEqual(root, REPO / paths.ENGINE_DIR_NAME,
+                             "Neo 单独的仓库：引擎在仓库根下的 strata/（跑 python -m neo.engine_setup --ensure）")
         self.assertTrue(paths.is_strata_root(root), f"{root} 里该有 setup.py 与 serve/server.py：{why}")
         self.assertEqual(ENGINE, root, "_bootstrap.ENGINE 与运行时解析必须是同一个目录")
 

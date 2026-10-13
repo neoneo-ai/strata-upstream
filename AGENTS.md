@@ -34,18 +34,38 @@ Strata root directory and uses that directory as its root. Its tests need no GPU
 user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
-neo.tests.test_connectors neo.tests.test_wizard neo.tests.test_connect_api
-neo.tests.test_connect_cli neo.tests.test_manager_cli` (222 tests, 199.2 s on Windows 11 /
-Python 3.13, using `serve/server.py --engine mock`). Neo's own packages live in `neo/requirements-neo.txt`, not in
-`requirements.txt`.
+neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
+neo.tests.test_connect_cli neo.tests.test_manager_cli` (312 tests, 288.6 s on Windows 11 /
+Python 3.13, using `serve/server.py --engine mock`; 149.4 s on the earlier 305-test run). Neo's own
+packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes
-`huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source, `neo/wizard.py`
-runs `setup.py --yes --no-start` in the background, `neo/tokens.py` mints `sk-neo-<32 hex>` keys and prints LAN
-addresses, and `neo/connectors.py` merges Neo's block into Claude Code / Codex CLI / OpenCode / OpenClaw config
-files (backup to `.neo-bak`, merge never overwrite, unparseable file left untouched). Default stays
+`huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` over TCP 443 and only suggests a source,
+`neo/wizard.py` runs `setup.py --yes --no-start` in the background, `neo/tokens.py` mints `sk-neo-<32 hex>` keys
+and prints LAN addresses (the page's 「复制 token」 puts the live key on the clipboard in one click:
+`POST /neo/token {"action":"reveal"}` returns the full key only to requests whose peer address is loopback and
+writes nothing, and the page shows the mask until asked), and `neo/connectors.py` merges Neo's block into Claude Code / Codex CLI / OpenCode /
+OpenClaw config files (backup to `.neo-bak`, merge never overwrite, unparseable file left untouched). Default stays
 `127.0.0.1` with no API key; every one of these is opt-in and writes nothing until the user asks. CLI:
 `python -m neo.wizard --check`, `python -m neo.connect list`.
+
+The server's key guards inference only: `serve/server.py`'s `_authorized(monitor=True)` lets the Monitor's
+read-only endpoints (`/metrics`, `/status`, `/slots`, `/props`, `/config`, `/settings`, `/mcp`, `/api/requests`,
+`/v1/status`) answer to a request whose peer address is loopback and whose `Host` the server answers to (the Host
+check is re-applied there, so a rebinding page gets the 401), while every `POST`, `/v1/*` and `/models` stays
+key-gated from any address. The embedded Monitor page therefore keeps showing data after a token is minted;
+`neo/tests/test_upstream_api.py` guards that shape.
+
+The 模型 page also carries a "下载安装模型" area: `neo/models.py` reads `setup.py`'s `MODELS` / `FAMILIES`
+tables with `ast` (never imports or runs it), reads this machine's RAM / GPU / free disk, recommends by RAM tier
+from the docs, and marks each entry fits / tight / no. `GET /neo/catalog` serves it, `POST /neo/install` runs
+`setup.py --yes --no-start --family X --model Y` in the background into `neo/state/logs/wizard.log` - Neo never
+downloads a model itself, and refuses anything not on that menu. CLI: `python -m neo.models --root .` (`--json`).
+Below the menu is a download-source row (auto-by-probe / Hugging Face / ModelScope / hf-mirror), saved in
+`neo/state/source.json` and set with `POST /neo/source`: the two direct sources become `--source` values, the
+mirror is `HF_ENDPOINT=https://hf-mirror.com` in the child's environment (`setup.py` reads that env var itself,
+`--source` has no mirror value), so the selector uses only knobs the upstream already has and changes no upstream
+file. CLI: `python -m neo.models --root . --source modelscope`, `python -m neo.wizard ... --source mirror`.
 
 ## Contributing a change or report
 

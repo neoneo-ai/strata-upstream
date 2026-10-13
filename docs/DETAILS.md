@@ -667,7 +667,7 @@ request counters, `vllm:prefix_cache_queries_total` / `_hits_total` (prompt toke
 `vllm:spec_decode_num_draft_tokens_total` / `_accepted_tokens_total` (the MTP drafts), and the histograms
 `vllm:time_to_first_token_seconds`, `vllm:inter_token_latency_seconds` and `vllm:e2e_request_latency_seconds` - so the
 dashboards and alerts written for a vLLM server read this one. With an API key, the scraper sends it as a bearer
-token. Any other request keeps the JSON.
+token; a scraper on the same PC needs no key. Any other request keeps the JSON.
 
 The JSON's own facts that vLLM has no name for come in the same scrape under `strata:`, named after their JSON key,
 so a Monitor-tab panel and a Grafana panel read the same value: `strata:live_state{state="..."}`, `strata:live_tok_s`,
@@ -685,7 +685,7 @@ token, time between tokens and request duration (p50 / p95), the prompt cache an
 own panels (state, batch slots, rates, expert cache hit rate, GPU and RAM). Its first row uses only vLLM's names, so
 it also reads a vLLM server.
 
-`/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `/slots` uses llama.cpp's names: `n_ctx` and `n_prompt_tokens` (the running request's prompt size, kept after it ends: what a front-end's context meter divides by `n_ctx`). `total_slots` in `/props` is the number of `--batch` slots (1 without). `autoload` has no effect; an unknown `model` returns 404. These metadata endpoints and `/slots` require the API key when one is configured. They do not load, unload or restart models.
+`/models` and `/v1/models` list only the loaded model, with its context limit and input modalities. `/props` exposes the original chat template, context limit, configured generation defaults (shared settings take precedence), model path and engine version when available. Context means the full engine context, not the resident KV window. `n_predict: -1` means no fixed output cap. Unconfigured sampling fields are omitted. `/slots` uses llama.cpp's names: `n_ctx` and `n_prompt_tokens` (the running request's prompt size, kept after it ends: what a front-end's context meter divides by `n_ctx`). `total_slots` in `/props` is the number of `--batch` slots (1 without). `autoload` has no effect; an unknown `model` returns 404. `/models`, `/v1/models` and every `POST` need the API key when one is configured, from anywhere. The read-only monitoring endpoints (`/metrics`, `/metrics/prometheus`, `/status`, `/slots`, `/props`, `/config`, `/settings`, `/mcp`, `/api/requests`, `/v1/status`) also answer to a request from this PC without it - the Monitor panel on the machine that runs the server is that user's own - and need it from any other machine. They do not load, unload or restart models.
 
 `chat_template_caps` uses llama.cpp's field names. Strata checks them when loading the active template by rendering
 small requests; a rejected or omitted feature is `false`, and a template that fails a probe in any way only turns that
@@ -916,6 +916,15 @@ print(r.choices[0].message.content)
   an API key, the key decides. `POST /unload` and `POST /load` take `Content-Type: application/json` from Strata's
   own page (or no `Origin`), like `/settings`. `POST /slots/0?action=save|restore` keeps the Host and API-key checks
   and also takes only JSON from no `Origin`, Strata's own page or a trusted origin - also when an API key is set.
+- **What the key guards.** The key is the model's: every `POST` (`/v1/*`, `/settings`, `/config`, `/load`, `/unload`,
+  `/slots/0?action=save|restore`) and the model list (`/models`, `/v1/models`) answer to it alone, from any address.
+  The Monitor's read-only endpoints (`/metrics`, `/metrics/prometheus`, `/status`, `/slots`, `/props`, `/config`,
+  `/settings`, `/mcp`, `/api/requests`, `/v1/status`) also answer from this PC with no key: the peer address the
+  socket reports is `127.x` / `::1` (never the `Host` header, which the client writes) and the `Host` is a name this
+  server answers to - with a key the Host check in the request parser is off, so the exemption asks for it again and
+  a rebinding page whose own name its DNS points at `127.0.0.1` gets the **401**, not the dashboard. From any other
+  machine those endpoints need the key like `/v1/*` does: `/status` and `/api/requests` carry the end of the last
+  answer (#212).
 
 **Conversation cache.** A request that continues a chat reads only the part after what the engine already holds: the
 live session, or one of the checkpoints it keeps in RAM (up to 6, ~118 MB each, taken at the start of each new
@@ -1932,7 +1941,9 @@ non-stream response bodies. Total wall-clock includes FIFO waits and automatic l
 first-token, prompt/output tokens and engine decode timing are shown separately.
 
 `GET /api/requests` returns compact summaries; `GET /api/requests?id=<id>` returns one retained request.
-Both use the existing API-key check. The monitor retains the newest **100 requests in memory** until restart,
+Both use the existing API-key check, with the Monitor's rule for this PC: from `127.x` / `::1` under a local `Host`
+they answer with no key, and from any other machine they need it. The monitor retains the newest **100 requests in
+memory** until restart,
 with **262,144 characters per input/output/reasoning/response field** and visible truncation flags. The actual API
 responses are unaffected. Headers are not recorded, and the monitor key is kept in this tab's session storage.
 Treat request history as sensitive input/output when exposing Strata on a network: set an API key as above.

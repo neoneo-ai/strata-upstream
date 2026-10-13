@@ -74,12 +74,13 @@ pywebview 用 Edge (WebView2) 后端；机器上没有 WebView2 运行时、或�
 | `neo/engines/` | 引擎适配层：`strata.py`（发现配置、拼命令）、`base.py`、`mock.py`（测试） |
 | `neo/netprobe.py` | 下载源探测：TCP 443 连 `huggingface.co` / `hf-mirror.com` / `www.modelscope.cn` 并计时，结果缓存；只给建议，不改上游的源选择 |
 | `neo/tokens.py` | key 与绑法：`sk-neo-<32 hex>`、掩码、按 base 缓存的 key、本机局域网地址、防火墙提示命令（只给不执行） |
-| `neo/wizard.py` | 安装向导：四步现状 + 拼 `setup.py --yes --no-start` 命令 + 后台跑并写 `logs/wizard.log` |
+| `neo/wizard.py` | 安装向导：四步现状 + 拼 `setup.py --yes --no-start [--family X --model Y]` 命令 + 后台跑并写 `logs/wizard.log`，`run_state()` 说现在有没有在跑 |
+| `neo/models.py` | 安装清单：ast 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表（不 import、不跑它）+ 这台机器（内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装（fits / tight / no）；命令行 `python -m neo.models --root . [--json]` |
 | `neo/connectors.py` | 四个 agent（Claude Code / Codex CLI / OpenCode / OpenClaw）的配方与合并写入：先备份 `.neo-bak`，只动 Neo 自己那一段，解析不了就不动 |
 | `neo/connect.py` | 接线命令行：`python -m neo.connect [agent] [--persist] [--lan] [--json]` |
 | `neo/web/` | 控制台页面：状态 / 模型 / 聊天 / 监控 / 日志 / 设置 / 接入 |
 | `neo/NeoStrata.spec`、`neo/build_exe.py`、`neo/neo_entry.py` | 打成一个 `NeoStrata.exe`（见"打成 exe"） |
-| `neo/tests/` | 222 个测试（见下） |
+| `neo/tests/` | 305 个测试（见下） |
 | `neo/requirements-neo.txt`、`neo/install_neo.py` | Neo 自己的依赖，不进上游 `requirements.txt` |
 
 Neo 的运行状态全在 `neo/state/`，被 `neo/.gitignore` 忽略。
@@ -127,17 +128,63 @@ POST /neo/open               {"page":"chat|monitor"} 在浏览器里打开那一
 POST /neo/open-log           用系统默认方式打开服务日志
 GET  /neo/net?fresh=1        下载源连通性（TCP 443）与下载源建议；结果缓存在 neo/state/netprobe.json
 GET  /neo/lan                本机局域网地址、可访问的界面地址、防火墙提示、当前 token 状态
-POST /neo/token              {"action":"new|unset|forget"} 生成/取消/删除 key（只回显掩码）
+POST /neo/token              {"action":"new|reveal|unset|forget"}：new 生成一把 key 写
+                             neo/state/launcher.json；reveal 把当前这把原样交回页面（给"复制
+                             token"用，只读，且只认对端地址是本机的请求，别处只给掩码）；
+                             unset 清掉服务上的 key（缓存留着）；forget 从缓存里删掉这把。
+                             new 与 reveal 的应答带完整 key，其余只带掩码
 GET  /neo/connect            四个 agent 的接线配方（读配置，不写）
 POST /neo/connect            {"agent":"claude|codex|opencode|openclaw"} 写配置文件（先备份）
 GET  /neo/wizard             安装向导：现状四步 + 将要执行的 setup.py 命令 + 日志尾部
-POST /neo/wizard             后台执行 setup.py --yes --no-start
+POST /neo/wizard             后台执行 setup.py --yes --no-start（带 family/model 时加 --family X --model Y）
+GET  /neo/catalog            可安装清单：ast 读 setup.py 的 MODELS / FAMILIES 两张表 + 这台机器
+                             （内存 / 显卡 / 盘剩）+ 按内存的推荐 + 装没装 + 正在装的那一个 +
+                             下载源那一排（探测结论、四个选项的耗时与命令前后缀、记住的那一个）
+GET  /neo/catalog?fresh=1    同上，并在后台线程里重新探测一次（页面读缓存，不被慢站点拖住）
+POST /neo/install            {"family":"qwen","model":"IQ3_S","source":"modelscope"} 后台跑
+                             setup.py --yes --no-start --family qwen --model IQ3_S，输出进
+                             neo/state/logs/wizard.log；菜单里没有这一项、或已经有一个在跑，
+                             都挡回来并说明原因
+POST /neo/source             {"source":"probe|huggingface|modelscope|mirror"} 记住下载源，
+                             存 neo/state/source.json，回同一份清单；认不得的源回一条说明，
+                             什么都不写、不起子进程
 ```
 
 ## 接入页（M2/M3）：装模型、开局域网、接四个 agent
 
 页面在窗口顶栏的「接入」，命令行是 `python -m neo.wizard` 和 `python -m neo.connect`。
 **默认路径不变**：不写任何用户文件、服务绑 `127.0.0.1`、不带 key；这一页的每一项都要用户点名才动。
+
+### 模型页的「下载安装模型」（`neo/models.py`）
+
+清单不在 Neo 里抄一份：`neo/models.py` 用 `ast` 读 `setup.py` 的 `MODELS` / `FAMILIES` 两张表
+（不 import、不跑它，文件改了缓存自动失效），装没装是扫根目录的 `strata-*.json`（配置在、文件不在
+的记「装好一半」），机器是问 `GlobalMemoryStatusEx`（与 `setup.py` 的 `ram_gb()` 同一算法）、
+`nvidia-smi`（60 秒内不重复问，AMD 卡问不到就说问不到）、`shutil.disk_usage` 看盘剩多少。
+
+推荐按内存分档，档位是 `docs/AI_SETUP.md` 第 3 步与 `docs/MODELS.md` 的 Pick by RAM：
+32 GB → Coder IQ1_M，48 与 64 GB → IQ2_XS，96 GB 以上 → IQ3_S。装不装得下按 `setup.py --check`
+的口径：需要内存不超过本机内存 = 装得下，超出 8 GB 以内 = 勉强，再多 = 装不下；unsloth 那两档
+是流式加载，按它自己的下限（48 GB）算。
+
+点「安装」= `POST /neo/install` = 后台跑 `setup.py --yes --no-start --family X --model Y`，
+输出进 `neo/state/logs/wizard.log`，页面在模型页时每 5 秒刷一次清单与日志尾部。Neo 不自己下载：
+下载、校验、写 `strata-*.json` 全是 `setup.py` 的事；菜单里没有这一项、或已经有一个安装在跑，
+接口都挡回来并说明原因，不起子进程。命令行同一条路：`python -m neo.models --root .`（`--json` 出
+机器可读的那份）看清单，`python -m neo.wizard --family coder --model IQ1_M` 装。
+
+清单下面那一排是**下载源**：`自动（按探测）` / `Hugging Face 官方` / `ModelScope 国内` /
+`hf-mirror 镜像`，选了就 `POST /neo/source` 记住（`neo/state/source.json`），命令预览立刻跟着变。
+四个选项全走上游本来就有的口子，Neo 不改 `setup.py` 一行：官方与 ModelScope 是 `--source` 的值，
+镜像是子进程环境里的 `HF_ENDPOINT=https://hf-mirror.com`（`setup.py` 自己读它，`--source` 里没有
+镜像这一项，所以镜像不带 `--source`）。「重新探测」按钮 = `GET /neo/catalog?fresh=1`，在后台线程里
+测，页面读缓存。实测 2026-10-13 这台 PC：`自动` 建议 ModelScope 时命令是
+`python setup.py --yes --no-start --source modelscope`，选镜像时是
+`HF_ENDPOINT=https://hf-mirror.com python setup.py --yes --no-start`，两行都写进 `wizard.log` 头部。
+
+实测 2026-10-13 这台 PC（Windows 11，Python 3.13，94 GB 内存，RTX 5090 D v2 24 GB 显存，
+D 盘剩 487 GB）：清单 10 项，推荐 `--family qwen --model IQ3_S`（83.6 GB 下载，需要约 62 GB 内存），
+已装的 Swift 1.5 IQ3_XXS 在清单里标「已装」、按钮是「已装好」。
 
 ### 下载源探测（`neo/netprobe.py`）
 
@@ -146,14 +193,16 @@ POST /neo/wizard             后台执行 setup.py --yes --no-start
 家庭网络）：`huggingface.co` 196 ms、`hf-mirror.com` 4052 ms、`www.modelscope.cn` 36 ms，三个都连得上，
 建议保持默认源，`setup.py` 命令里不加 `--source`。
 
-Neo **不改上游的下载源选择**，只在"Hugging Face 连不上而 ModelScope 连得上"时往 `setup.py` 传
-`--source modelscope`；镜像站连得上而 Hugging Face 连不上时只提示 `HF_ENDPOINT`，不换源
-（两边仓库与文件路径不同，换源不是换镜像）。
+Neo **不改上游的下载源选择**，只把用户点的那一个翻译成上游本来就认的参数：`--source modelscope` /
+`--source huggingface`，镜像走 `HF_ENDPOINT`（见上）。探测的结论只用于「自动」这一档：
+`huggingface.co` 连不上而 ModelScope 或镜像连得上时，建议那一个并说清为什么；三个都连得上就
+不加 `--source`，用 `setup.py` 的默认源。用户随时可以越过建议自己点。
 
 ### 安装向导（`neo/wizard.py`）
 
 四步：环境（根目录与 `setup.py`）→ 模型（`strata-*.json`）→ 网络（探测结论）→ 安全（绑法与 key）。
-"开始安装"跑的是 `python setup.py --yes --no-start [--source ...] [--host ...] [--api-key ...]`，
+"开始安装"跑的是 `[HF_ENDPOINT=https://hf-mirror.com] python setup.py --yes --no-start [--source ...]
+[--host ...] [--api-key ...]`（方括号里那截环境是选镜像时才加的，见上），
 输出进 `neo/state/logs/wizard.log`，页面每 5 秒读尾部。`--no-start` 是必须的：服务归监督器起，
 不能让 `setup.py` 自己起一个占住端口。实测 2026-10-12：跑一个打印参数的桩 `setup.py`，
 子进程 4.4 秒（venv 的 python 冷启动），退出码 0，命令行与输出都落在 `wizard.log` 里。
@@ -161,11 +210,34 @@ Neo **不改上游的下载源选择**，只在"Hugging Face 连不上而 ModelS
 
 ### 局域网与 token（`neo/tokens.py`）
 
-- key 形状 `sk-neo-<32 位 hex>`（`secrets.token_hex(16)`），界面上只显示掩码 `sk-neo-xxxxxxxx…xxxx`。
-- 每个 base 用过的 key 存 `neo/state/key_cache.json`，切绑法时不用重新生成。
+- key 形状 `sk-neo-<32 位 hex>`（`secrets.token_hex(16)`），界面上平时只显示掩码
+  `sk-neo-xxxxxxxx…（39 字符）`。
+- **一键复制**：接入页的「复制 token」把当前生效的那把完整 key 送进剪贴板（`navigator.clipboard`，
+  缺权限时退回 `execCommand("copy")`，与「复制服务地址」「复制命令」同一条路）。完整 key 只出现在
+  token 那一行的只读输入框里；掩码一变（换了 key、清了 key）页面立刻把它清掉，复制到的是当前这把。
+  取 key 走 `POST /neo/token {"action":"reveal"}`：只读、不写任何文件，且只认**对端地址**是本机
+  （127.0.0.1/::1）的请求 —— 控制台绑 `0.0.0.0` 时，从局域网来的请求只拿得到掩码。
+- 每个 base 用过的 key 存 `neo/state/agent_keys.json`（分 saved / minted 两桶），切绑法时不用重新生成。
 - 绑 `0.0.0.0` 时列出本机局域网地址与 `http://<ip>:<port>` 界面地址，并给一条**只提示不执行**的
   Windows 防火墙命令（`netsh advfirewall firewall add rule ... port=<端口>`）。
   绑局域网而不带 key 会被 `wizard.py` 判成"未就绪"，`neo/manager.py` 也会打一行警告。
+
+### token 管到哪（`serve/server.py` 的 `_authorized`）
+
+token 只管模型：所有 `POST`（`/v1/*`、`/settings`、`/config`、`/load`、`/unload`、`/slots/*`）与模型清单
+（`/models`、`/v1/models`）在任何地址都只认 key。监控的只读端点（`/metrics`、`/metrics/prometheus`、
+`/status`、`/slots`、`/props`、`/config`、`/settings`、`/mcp`、`/api/requests`、`/v1/status`）对**本机来的**
+请求不带 key 也答 —— 判据是 socket 报的对端地址（127.x / ::1，不是客户端自己写的 `Host` 头），加上
+`Host` 必须是这台服务认的名字：设了 key 时上游本来就跳过 Host 检查，这一条把它补回来，DNS rebinding
+的页面拿到的是 401，不是面板。从别的机器读这些端点照样要 key（`/status` 与 `/api/requests` 带最近
+一次回答的尾巴，#212）。
+
+Neo 窗口里的监控页因此不用填 key：设了 token 之后 `http://127.0.0.1:8080/#monitor` 的 Speed / VRAM /
+GPU 卡片照旧出数。改之前它每秒一次 `GET /metrics` 吃 401，右上角写 "API key needed"，卡片全是"—"
+（`serve/web/app.js` 的 key 只存在浏览器 localStorage，要在 About > Settings 里手填）。
+实测 2026-10-13（mock 引擎，`serve/test_security.py` 新增 4 条）：本机无 key 读 9 个监控端点全 200；
+把 `loopback_peer` 判成假后同样这些端点 401、带上 key 200；`Host: evil.example.com` 401；
+`POST /v1/chat/completions` 无 key 401、带 key 200。
 
 ### 四个 agent 的配方（`neo/connectors.py`）
 
@@ -492,11 +564,10 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_connect_cli neo.tests.test_manager_cli
 ```
 
-222 个测试，199.2 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置；`test_logging` 25 个 5.0 秒、
-`test_ui` 34 个 1.1 秒、`test_netprobe` 11 个 / `test_tokens` 16 个 / `test_connectors` 26 个 /
-`test_wizard` 13 个 / `test_connect_cli` 8 个 / `test_manager_cli` 12 个共 2.5 秒，
-其余 77 个 191 秒）：
+305 个测试，149.4 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置；`test_netprobe` 17 个 / `test_models` 40 个 /
+`test_wizard` 26 个 / `test_ui` 43 个 / `test_tokens` 与 `test_connectors` 42 个 / `test_console` 19 个
+共 40 秒，其余（监督器、引擎、上游接口、日志、接入接口、两个 CLI）109 秒，全在起子进程与等真服务）：
 
 - `test_supervisor`：启动到就绪、事件记录、非预期退出后自动重启（新进程）、退避按 1/2/3 次走、
   10 分钟内 3 次后熔断并停在 halted、用户停止后不被拉起、接手已在运行的服务、诊断关键词、
@@ -515,7 +586,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
   浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
-- `test_ui`（34 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+- `test_ui`（44 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
@@ -556,11 +627,18 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   （服务归监督器起）、`--host 0.0.0.0` 才带 `--host` 且带 key、探测到 modelscope 才加 `--source`、
   用户点名 hf 时不改、源在 `--yes` 之前；四步里"局域网没 key"判成未就绪、没有 `setup.py` 要说出来；
   真跑一次（临时目录里的桩 `setup.py`）命令行与输出都落进 `logs/wizard.log`、缺 `setup.py` 时不跑。
-- `test_connect_api`（10 个）：`GET /neo/net` 不联网（吃缓存）、`GET /neo/lan` 报出绑法与掩码且
-  环回时没有防火墙提示、`POST /neo/token` 生成的 key 落进 `launcher.json` 而应答里只有掩码、
-  `unset` 清掉 key 且缓存留着、坏 action 回 400；`GET /neo/connect` 四个配方齐且**不写文件**、
-  `POST /neo/connect` 写进临时目录并留备份、坏 agent 回 400；`GET /neo/wizard` 四步齐、
-  `POST /neo/wizard` 在没装好的根目录上回 400 且不起子进程。
+- `test_connect_api`（28 个）：`GET /neo/net` 不联网（吃缓存）、`GET /neo/lan` 报出绑法与掩码且
+  环回时没有防火墙提示、绑 `0.0.0.0` 时给出局域网地址与带端口的防火墙命令；`POST /neo/token`
+  生成的 key 落进 `launcher.json`、进 key 缓存、交给监督，应答里带完整 key 与掩码；
+  `{"action":"reveal"}` 原样交回**同一把**且 `launcher.json` 与 key 缓存的字节一字未动、
+  没有 key 时明说"没有 token"、对端不是本机时只给掩码（`api_key` 回空串）、
+  `unset` 清掉服务上的 key 而缓存留着、`forget` 删了缓存、坏 action 不写任何东西也不生成 key；
+  `GET /neo/connect` 四个配方齐且**不写文件**、`POST /neo/connect` 写进临时目录并留备份、
+  坏 agent 回一条说明；`GET /neo/wizard` 四步齐且带上探测建议的源；`GET /neo/catalog` 列出
+  菜单与这台机器、`POST /neo/install` 跑临时目录里那份只会打印的假 `setup.py`（命令行与输出
+  进 `wizard.log`）、菜单里没有的/盘算里跑不起来的/已经有一个在跑的都挡回来且不起子进程；
+  下载源那一排：四个选项齐、记住的源进安装命令、镜子只加 `HF_ENDPOINT` 不加 `--source`、
+  认不得的源挡回来且不写 `source.json`；`?fresh=1` 不拖住探测；**五条读接口一个文件都不写**。
 - `test_connect_cli`（8 个）：`list` 说出四个 agent 与各自的配置文件、不认识的 agent 回 2 并列出可选；
   `--json` 出整份配方（base、env、unset 列表、命令、PowerShell 与 POSIX 两块）且**不建任何目录**、
   给了 `--key` 就不写 key 缓存；`--base` 压过 `--host`/`--port`（写进 `config.toml` 的 `base_url`
@@ -574,8 +652,12 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
 - `test_ui` 里的接入页检查：「接入」页与顶栏 tab 在、页面里写的 `/neo/net` `/neo/lan` `/neo/token`
   `/neo/connect` `/neo/wizard` 五条路由服务里都有、`app.js` 里每一个 `$("id")` 在 `index.html` 里都有
   对应的 `id="..."`（这类错在窗口里是静默的：`getElementById` 回 null，取 `.textContent` 抛异常，
-  整段渲染停住，页面看着像没数据）、新样式块 `.agents`/`.agent`/`.cmd`/`.steps` 在 `style.css` 里、
-  `loadConnect` 在顶层。
+  整段渲染停住，页面看着像没数据）、新样式块 `.agents`/`.agent`/`.cmd`/`.steps`/`.keyval` 在
+  `style.css` 里、`loadConnect` 在顶层；**「复制 token」那条**：按钮 `lan-copy-key` 与只读输入框
+  `lan-key-value` 在 HTML 里、输入框默认是藏着的（`class="path keyval hidden"`）、`app.js` 里
+  接了 `{"action":"reveal"}` 且生成后把完整 key 留在页面里（省得再生成一把）、
+  `.keyval.hidden` 那条补在 `.keyval` 之后（`.keyval` 的 `display:block` 定义在 `.hidden` 之后，
+  不补这一条那个框会一直露着）。
 
 exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --engine mock` 起窗口 →
 `/neo/status` 到 `running`、`Responding=True`、`neo/state/instance.json` 里 `mode="window"`；
@@ -592,6 +674,14 @@ exe 那条路是手工验的（2026-10-12，Windows 11）：`NeoStrata.exe --eng
 `base=http://127.0.0.1:28180`、模型 `mock`、上下文 32768；`/neo/wizard` 四步全 OK，命令是
 `...\python.exe ...\setup.py --port 28180 --yes --no-start`。命令行侧 `python -m neo.wizard --check`
 与 `python -m neo.connect list` 在同一台机器上打印完整（闸门不再裁整块，见"日志与控制台输出"第 5 条）。
+
+「复制 token」这条在 mock 壳上逐条验过（2026-10-13，Windows 11 / Python 3.13，
+`ConsoleServer` + `MockEngine`，Neo 的 state 目录指到临时目录）：开局 `/neo/lan` 说没有 key；
+`POST /neo/token` 出 `sk-neo-23fb810c80e7629c12f0d26dd16c7f6e`（39 字符），`/neo/lan` 跟着只报
+`sk-neo-23fb810c…（39 字符）`；`{"action":"reveal"}` 交回同一把，连点两次都是它；
+对端不是本机时（直接调 `make_token(..., loopback=False)`）`api_key` 回空串、只给掩码；
+`unset` 后 `launcher.json` 里是空串而 key 缓存里还有 1 条；页面 `/`、`/app.js`、`/style.css`
+里 `lan-copy-key`、`lan-key-value`、`{"action":"reveal"}`、`.keyval` 都在。
 
 
 ## 已知边界

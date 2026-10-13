@@ -15,6 +15,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
@@ -419,8 +420,11 @@ class ToolLoop(unittest.TestCase):
         self.assertEqual(st["tools"], len(fake.TOOLS))
         self.assertEqual(st["settings"]["max_rounds"], 2)
         self.svc.api_key = "k"
-        with self.assertRaises(urllib.error.HTTPError):
-            urllib.request.urlopen(self.base + "/mcp", timeout=10)
+        with urllib.request.urlopen(self.base + "/mcp", timeout=10) as r:   # this PC: the Monitor's card, no key
+            self.assertEqual(json.loads(r.read())["tools"], len(fake.TOOLS))
+        with mock.patch("serve.server.loopback_peer", lambda addr: False):   # another machine: the key decides
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(self.base + "/mcp", timeout=10)
         self.svc.api_key = ""
 
 

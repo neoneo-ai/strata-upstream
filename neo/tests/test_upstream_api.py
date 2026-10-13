@@ -2,6 +2,8 @@
 
 Neo 不改上游，全靠上游已有的 CLI 与端点。上游改了名字，这条测试要第一时间报出来，
 而不是等用户的 Neo 起不来。
+模型页"下载源"那一排用的也是上游本来就有的口子（`--source` 的可选值与 `HF_ENDPOINT`），
+上游收掉这两个口子时这条测试先响（TestSetupCli 里的 test_the_download_source_knobs_neo_switches_still_exist）。
 """
 from __future__ import annotations
 
@@ -39,6 +41,19 @@ class TestServerApi(unittest.TestCase):
     def test_metrics_endpoint_exists(self):
         self.assertIn('path == "/metrics"', self.src)
 
+    def test_the_monitor_reads_answer_to_this_pc_without_the_key(self):
+        """Neo 的监控页是内嵌的上游页面，key 只存在它自己的 localStorage 里（About > Settings 手填）。
+        设了 token 之后 `/metrics` 必须对**本机来的**读取直接答，否则面板全是"—"、右上角写
+        "API key needed" —— 2026-10-13 就是这样空掉的。上游把这条收回去时，这条先响。
+        """
+        self.assertIn("def loopback_peer(", self.src, "serve/server.py 里没有了 loopback_peer()")
+        self.assertIn("def _authorized(self, monitor: bool = False)", self.src,
+                      "_authorized 不再区分监控读取")
+        block = re.search(r'path == "/metrics".*?self\._json\(200, svc\.metrics', self.src, re.S)
+        self.assertTrue(block, "找不到 /metrics 的 JSON 分支")
+        self.assertIn("self._authorized(monitor=True)", block.group(0),
+                      "本机读 /metrics 又要 key 了：Neo 内嵌的监控页会整页空掉")
+
     def test_metrics_sections_neo_flattens_still_exist(self):
         """Neo 的状态页卡片读 /metrics 的这四节（neo/engines/base.py 的 flatten_metrics）。
 
@@ -73,8 +88,27 @@ class TestSetupApi(unittest.TestCase):
         self.src = text(ROOT / "setup.py")
 
     def test_flags_neo_will_use(self):
-        for flag in ("--model", "--port", "--yes", "--check", "--no-start", "--host", "--api-key"):
+        for flag in ("--model", "--family", "--port", "--yes", "--check", "--no-start",
+                     "--host", "--api-key"):
             self.assertIn(f'"{flag}"', self.src, f"setup.py 里找不到 {flag}")
+
+    def test_model_tables_neo_reads_still_exist(self):
+        """neo/models.py 用 ast 读这两张表拼安装清单；上游改名，这边要第一时间响。"""
+        self.assertIn("MODELS", self.src, "setup.py 里没有 MODELS 表，清单读不出来了")
+        self.assertIn("FAMILIES", self.src, "setup.py 里没有 FAMILIES 表，清单读不出来了")
+
+    def test_the_download_source_knobs_neo_switches_still_exist(self):
+        """模型页的"下载源"那一排全走上游本来就有的口子：--source 与 HF_ENDPOINT。
+
+        上游把 --source 的可选值改了、或不读 HF_ENDPOINT 了，Neo 的镜子那条路就断了，
+        这条要第一时间响（Neo 不改上游，见 neo/netprobe.py 开头那句 #908）。
+        """
+        self.assertIn('"--source"', self.src, "setup.py 里找不到 --source")
+        self.assertIn("SOURCES", self.src, "setup.py 的 --source 可选值表（SOURCES）没了")
+        for value in ("modelscope", "huggingface", "auto"):
+            self.assertIn(f'"{value}"', self.src, f"setup.py 的 --source 不再认 {value}")
+        self.assertIn("HF_ENDPOINT", self.src, "setup.py 不再读 HF_ENDPOINT，镜子那条路没了")
+        self.assertIn("hf-mirror.com", self.src, "上游的镜子地址（hf-mirror.com）改了")
 
     def test_config_naming_matches(self):
         self.assertIn("strata-", self.src, "配置文件的命名（strata-*.json）是 Neo 发现模型的依据")

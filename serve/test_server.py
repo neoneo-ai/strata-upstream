@@ -827,7 +827,8 @@ class EffortAtTheEnd(unittest.TestCase):
 
 
 class StatusNeedsTheKey(unittest.TestCase):
-    """#212: /status shows the end of the answer being written, so it needs the key like /v1/*."""
+    """#212: /status shows the end of the answer being written.  From another machine it needs the key like
+    /v1/*; from this PC a monitoring read needs none - the Monitor page is this user's own panel."""
 
     def test_status(self):
         tok = ByteTokenizer()
@@ -836,14 +837,18 @@ class StatusNeedsTheKey(unittest.TestCase):
         httpd = serve(svc, port=0)
         base = f"http://127.0.0.1:{httpd.server_address[1]}/status"
         try:
-            with self.assertRaises(urllib.error.HTTPError) as e:
-                urllib.request.urlopen(base, timeout=10)
-            self.assertEqual(e.exception.code, 401)
-            e.exception.close()
+            with urllib.request.urlopen(base, timeout=10) as r:      # this PC, no key: the panel is the user's
+                self.assertEqual(r.status, 200)
+                self.assertNotIn("tail", json.loads(r.read()))
             req = urllib.request.Request(base, headers={"Authorization": "Bearer k3y"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 self.assertEqual(r.status, 200)
                 self.assertNotIn("tail", json.loads(r.read()))
+            with mock.patch("serve.server.loopback_peer", lambda addr: False):    # another machine: the key decides
+                with self.assertRaises(urllib.error.HTTPError) as e:
+                    urllib.request.urlopen(base, timeout=10)
+                self.assertEqual(e.exception.code, 401)
+                e.exception.close()
         finally:
             httpd.shutdown()
             httpd.server_close()
@@ -947,7 +952,7 @@ class ApiKeyForms(unittest.TestCase):
         svc = Service(MockEngine(tok, "ok", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
         svc.api_key = "ключ"
         httpd = serve(svc, port=0)
-        base = f"http://127.0.0.1:{httpd.server_address[1]}/status"
+        base = f"http://127.0.0.1:{httpd.server_address[1]}/v1/models"   # the API surface: the key decides here
         try:
             sent = ("Bearer " + svc.api_key).encode().decode("latin-1")   # UTF-8 bytes, as curl and the web app send
             with urllib.request.urlopen(urllib.request.Request(base, headers={"Authorization": sent}), timeout=10) as r:
@@ -3060,8 +3065,11 @@ class WebApp(unittest.TestCase):
     def test_discovery_needs_the_api_key(self):
         self.svc.api_key = "secret"
         try:
-            for path in ("/models", "/v1/models", "/props", "/slots"):
+            for path in ("/models", "/v1/models"):        # the API surface: the key decides, from anywhere
                 self.assertEqual(self.get(path)[0], 401)
+                self.assertEqual(self.get(path, {"Authorization": "Bearer secret"})[0], 200)
+            for path in ("/props", "/slots"):             # the Monitor's reads, from this PC: no key needed
+                self.assertEqual(self.get(path)[0], 200)
                 self.assertEqual(self.get(path, {"Authorization": "Bearer secret"})[0], 200)
         finally:
             self.svc.api_key = ""
@@ -3101,11 +3109,13 @@ class WebApp(unittest.TestCase):
         finally:
             del self.svc.engine.alive
 
-    def test_metrics_need_the_key_when_one_is_set(self):
+    def test_metrics_need_the_key_from_another_machine(self):
         self.svc.api_key = "secret"
         try:
-            self.assertEqual(self.get("/metrics")[0], 401)
-            self.assertEqual(self.get("/metrics", {"Authorization": "Bearer secret"})[0], 200)
+            self.assertEqual(self.get("/metrics")[0], 200)      # this PC: the Monitor page is the user's own
+            with mock.patch("serve.server.loopback_peer", lambda addr: False):
+                self.assertEqual(self.get("/metrics")[0], 401)
+                self.assertEqual(self.get("/metrics", {"Authorization": "Bearer secret"})[0], 200)
             self.assertEqual(self.get("/")[0], 200)                  # the page itself asks for the key
         finally:
             self.svc.api_key = ""

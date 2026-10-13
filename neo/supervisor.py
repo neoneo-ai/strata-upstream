@@ -195,6 +195,7 @@ class Supervisor:
                 "healthy": bool(probe.get("healthy")),
                 "loaded": bool(probe.get("loaded")),
                 "served_model": probe.get("model", ""),
+                "model_id": self.model_id,
                 "max_context": probe.get("max_context", 0),
                 "metrics": probe.get("metrics", {}),
                 "restarts": list(self.restarts),

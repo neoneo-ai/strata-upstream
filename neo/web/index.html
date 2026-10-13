@@ -10,14 +10,21 @@
 <body>
 <aside id="nav">
   <div class="brand"><img src="/icon.svg" alt="">Neo Strata</div>
-  <button class="tab on" data-page="status">状态</button>
-  <button class="tab" data-page="models">模型</button>
-  <button class="tab" data-page="chat">聊天</button>
-  <button class="tab" data-page="monitor">监控</button>
-  <button class="tab" data-page="logs">日志</button>
-  <button class="tab" data-page="connect">接入</button>
-  <button class="tab" data-page="settings">设置</button>
-  <div class="nav-foot"><span id="nav-state" class="pill idle">未启动</span></div>
+  <button class="tab on" data-page="status" data-i18n="nav.status">状态</button>
+  <button class="tab" data-page="models" data-i18n="nav.models">模型</button>
+  <button class="tab" data-page="modelset" data-i18n="nav.modelset">模型设置</button>
+  <button class="tab" data-page="chat" data-i18n="nav.chat">聊天</button>
+  <button class="tab" data-page="monitor" data-i18n="nav.monitor">监控</button>
+  <button class="tab" data-page="logs" data-i18n="nav.logs">日志</button>
+  <button class="tab" data-page="connect" data-i18n="nav.connect">接入</button>
+  <button class="tab" data-page="settings" data-i18n="nav.settings">设置</button>
+  <div class="nav-foot">
+    <span id="nav-state" class="pill idle">未启动</span>
+    <div class="nav-prefs">
+      <button id="btn-lang" title="中英切换">EN</button>
+      <button id="btn-theme" title="明暗切换">☀</button>
+    </div>
+  </div>
 </aside>
 
 <main>
@@ -27,84 +34,84 @@
       <span id="head-model" class="muted"></span>
     </div>
     <div class="head-right">
-      <button id="btn-start" class="primary">启动</button>
-      <button id="btn-stop">停止</button>
-      <button id="btn-retry" class="hidden">重试</button>
-      <button id="btn-refresh">刷新</button>
+      <button id="btn-start" class="primary" data-i18n="h.start">启动</button>
+      <button id="btn-stop" data-i18n="h.stop">停止</button>
+      <button id="btn-retry" class="hidden" data-i18n="h.retry">重试</button>
+      <button id="btn-refresh" data-i18n="h.refresh">刷新</button>
     </div>
   </header>
 
   <section id="page-status" class="page on">
     <div id="guide" class="guide hidden">
-      <h2>这台机器还没装模型</h2>
-      <p>Neo 是 Strata 的管理器，模型要先装好。到「模型」页看这台机器的内存该装哪一个，点「安装」
+      <h2 data-i18n="guide.h2">这台机器还没装模型</h2>
+      <p data-i18n="guide.p">Neo 是 Strata 的管理器，模型要先装好。到「模型」页看这台机器的内存该装哪一个，点「安装」
          就行；也可以在项目文件夹里运行 <code>START-HERE.bat</code>（Windows）或
          <code>./setup.sh</code>（Linux），装完回到这个窗口就能启动。</p>
       <div class="row">
-        <button id="guide-models" class="primary">去装模型</button>
-        <button id="guide-log" class="primary">看安装日志</button>
-        <button id="guide-reload">重新检查</button>
+        <button id="guide-models" class="primary" data-i18n="guide.models">去装模型</button>
+        <button id="guide-log" class="primary" data-i18n="guide.log">看安装日志</button>
+        <button id="guide-reload" data-i18n="guide.reload">重新检查</button>
       </div>
     </div>
 
     <div id="diag" class="diag hidden"></div>
 
     <div class="cards">
-      <div class="card"><div class="k">生成速度</div><div class="v" id="m-toks">—</div><div class="s">tok/s</div></div>
-      <div class="card"><div class="k">解码步长</div><div class="v" id="m-step">—</div><div class="s">ms / 步</div></div>
-      <div class="card"><div class="k">显存</div><div class="v" id="m-vram">—</div><div class="s" id="m-vram-s">已用 / 总量</div></div>
-      <div class="card"><div class="k">内存</div><div class="v" id="m-ram">—</div><div class="s" id="m-ram-s">已用 / 总量</div></div>
-      <div class="card"><div class="k">在跑的请求</div><div class="v" id="m-active">—</div><div class="s" id="m-queued">排队 0</div></div>
-      <div class="card"><div class="k">上下文</div><div class="v" id="m-ctx">—</div><div class="s" id="m-reqs">请求 0</div></div>
+      <div class="card"><div class="k" data-i18n="card.toks">生成速度</div><div class="v" id="m-toks">—</div><div class="s">tok/s</div></div>
+      <div class="card"><div class="k" data-i18n="card.step">解码步长</div><div class="v" id="m-step">—</div><div class="s" data-i18n="card.step.s">ms / 步</div></div>
+      <div class="card"><div class="k" data-i18n="card.vram">显存</div><div class="v" id="m-vram">—</div><div class="s" id="m-vram-s">已用 / 总量</div></div>
+      <div class="card"><div class="k" data-i18n="card.ram">内存</div><div class="v" id="m-ram">—</div><div class="s" id="m-ram-s">已用 / 总量</div></div>
+      <div class="card"><div class="k" data-i18n="card.active">在跑的请求</div><div class="v" id="m-active">—</div><div class="s" id="m-queued">排队 0</div></div>
+      <div class="card"><div class="k" data-i18n="card.ctx">上下文</div><div class="v" id="m-ctx">—</div><div class="s" id="m-reqs">请求 0</div></div>
     </div>
 
     <div class="panel">
-      <h3>服务</h3>
+      <h3 data-i18n="panel.svc">服务</h3>
       <table id="svc">
-        <tr><th>状态</th><td id="s-state">—</td></tr>
-        <tr><th>模型</th><td id="s-model">—</td></tr>
-        <tr><th>端口</th><td id="s-port">—</td></tr>
-        <tr><th>进程</th><td id="s-pid">—</td></tr>
-        <tr><th>自动重启</th><td id="s-restarts">—</td></tr>
-        <tr><th>日志</th><td id="s-log" class="path">—</td></tr>
+        <tr><th data-i18n="svc.state">状态</th><td id="s-state">—</td></tr>
+        <tr><th data-i18n="svc.model">模型</th><td id="s-model">—</td></tr>
+        <tr><th data-i18n="svc.port">端口</th><td id="s-port">—</td></tr>
+        <tr><th data-i18n="svc.pid">进程</th><td id="s-pid">—</td></tr>
+        <tr><th data-i18n="svc.restarts">自动重启</th><td id="s-restarts">—</td></tr>
+        <tr><th data-i18n="svc.log">日志</th><td id="s-log" class="path">—</td></tr>
       </table>
       <div class="row">
-        <button id="btn-chat">打开聊天页</button>
-        <button id="btn-monitor">打开监控页</button>
-        <button id="btn-log">打开日志文件</button>
+        <button id="btn-chat" data-i18n="btn.chat">打开聊天页</button>
+        <button id="btn-monitor" data-i18n="btn.monitor">打开监控页</button>
+        <button id="btn-log" data-i18n="btn.log">打开日志文件</button>
       </div>
     </div>
 
     <div class="panel">
-      <h3>发生了什么</h3>
+      <h3 data-i18n="panel.events">发生了什么</h3>
       <div id="events" class="events"></div>
     </div>
   </section>
 
   <section id="page-models" class="page">
     <div class="panel">
-      <h3>下载安装模型</h3>
+      <h3 data-i18n="panel.install">下载安装模型</h3>
       <p class="muted" id="cat-machine">—</p>
       <div class="src">
-        <label for="cat-src-select">下载源</label>
+        <label for="cat-src-select" data-i18n="src.label">下载源</label>
         <select id="cat-src-select"></select>
-        <button id="cat-src-retest">重测连通性</button>
+        <button id="cat-src-retest" data-i18n="src.retest">重测连通性</button>
       </div>
       <p class="muted src-note" id="cat-src-note">—</p>
       <div id="cat-rec" class="rec">—</div>
       <div id="cat-list" class="cat"></div>
       <div class="row">
-        <button id="cat-refresh">刷新</button>
-        <button id="cat-copy">复制推荐命令</button>
+        <button id="cat-refresh" data-i18n="cat.refresh">刷新</button>
+        <button id="cat-copy" data-i18n="cat.copy">复制推荐命令</button>
       </div>
       <p class="muted path" id="cat-cmd"></p>
       <pre id="cat-log" class="log small"></pre>
-      <p class="muted">清单来自 <code>setup.py</code> 的安装菜单（Neo 只读它这两张表，不跑它）。
+      <p class="muted" data-i18n="cat.note1">清单来自 <code>setup.py</code> 的安装菜单（Neo 只读它这两张表，不跑它）。
         点「安装」就是后台跑 <code>setup.py --yes --no-start --family … --model …</code>：
         下载要几十分钟，输出进 <code>neo/state/logs/wizard.log</code>。装完在下面的
         「这台机器上的模型」里就能启动。推荐按内存来，分档见 <code>docs/AI_SETUP.md</code>
         第 3 步与 <code>docs/MODELS.md</code>。</p>
-      <p class="muted">下载源默认按探测建议：两个源都通就走 <code>Hugging Face</code>（上游默认），
+      <p class="muted" data-i18n="cat.note2">下载源默认按探测建议：两个源都通就走 <code>Hugging Face</code>（上游默认），
         只有 <code>ModelScope</code> 通就走 <code>--source modelscope</code>。上面那一排可以自己换，
         选中的记在 <code>neo/state/source.json</code>，下一次安装就用它；镜子那条路给
         <code>setup.py</code> 设 <code>HF_ENDPOINT=https://hf-mirror.com</code>（<code>--source</code>
@@ -112,17 +119,89 @@
     </div>
 
     <div class="panel">
-      <h3>这台机器上的模型</h3>
+      <h3 data-i18n="panel.models">这台机器上的模型</h3>
       <div id="models" class="models"></div>
-      <p class="muted">列表来自项目根目录的 strata-*.json，最近用过的排最前。换模型会重启服务。</p>
+      <p class="muted" data-i18n="models.note">列表来自项目根目录的 strata-*.json，最近用过的排最前。换模型会重启服务。</p>
+    </div>
+
+    <div class="panel">
+      <h3 data-i18n="panel.up">在跑的服务</h3>
+      <div id="up-list" class="up"></div>
+      <div class="row">
+        <button id="up-reload" data-i18n="up.reload">刷新</button>
+        <button id="up-open" data-i18n="up.open">打开监控页</button>
+      </div>
+      <p class="muted" id="up-note">—</p>
+      <p class="muted" data-i18n="up.note">这两栏读的是服务自己的 <code>/v1/models</code> 与 <code>/status</code>：
+        页面开在 8083，直接问 8080 的面板端点读不到（上游不给跨源的
+        <code>Access-Control-Allow-Origin</code>），所以由 Neo 代发 —— token 留在 Neo 手里，
+        页面拿到的永远是这一份 JSON。</p>
+    </div>
+
+    <div class="panel">
+      <h3 data-i18n="panel.remote">远程加载</h3>
+      <label><span data-i18n="rm.url">服务地址</span><input id="rm-url" type="text" placeholder="http://192.168.1.20:8080"
+             spellcheck="false" autocomplete="off"></label>
+      <label><span data-i18n="rm.key">token</span><input id="rm-key" type="text" placeholder="sk-neo-…" spellcheck="false"
+             autocomplete="off"></label>
+      <div id="rm-list" class="agents"></div>
+      <div class="row">
+        <button id="rm-token" class="primary" data-i18n="rm.token">取本机 token</button>
+        <button id="rm-copy" data-i18n="rm.copy">复制这一行</button>
+      </div>
+      <p class="muted" id="rm-note">—</p>
+      <p class="muted" data-i18n="rm.note">远程加载就是两个环境变量：<code>NEO_SERVER_URL</code> 与
+        <code>NEO_API_KEY</code>。设了它们再跑下面那一行，agent 连的就是那台 Strata，
+        本机这台不动 —— 与「接入」页那一行是同一个命令，只是换了连谁。</p>
+    </div>
+  </section>
+
+  <section id="page-modelset" class="page">
+    <div class="panel">
+      <h3 data-i18n="panel.modelset">模型设置</h3>
+      <div class="row">
+        <label for="ms-model" data-i18n="ms.model">模型</label>
+        <select id="ms-model"></select>
+        <span id="ms-restart" class="pill warn hidden" data-i18n="ms.restart">改了要重启</span>
+      </div>
+      <div class="ms-grid">
+        <label><span data-i18n="ms.context">上下文长度</span><select id="ms-context"></select></label>
+        <label><span data-i18n="ms.kv">KV cache 类型</span><select id="ms-kv"></select></label>
+        <label><span data-i18n="ms.kvres">KV 常驻单元</span><select id="ms-kvres"></select></label>
+        <label><span data-i18n="ms.reserve">显存保留（MiB）</span><select id="ms-reserve"></select></label>
+        <label class="chk"><input id="ms-vision" type="checkbox"> <span data-i18n="ms.vision">图片（视觉编码器）</span></label>
+      </div>
+      <div class="row">
+        <button id="ms-save" class="primary" data-i18n="ms.save">保存</button>
+        <button id="ms-apply" data-i18n="ms.apply">重启并应用</button>
+        <button id="ms-reset" data-i18n="ms.reset">恢复 setup.py 的原样</button>
+        <span id="ms-note" class="muted"></span>
+      </div>
+      <table id="ms-est">
+        <tr><th data-i18n="ms.th.layers">层数</th><td id="ms-layers">—</td></tr>
+        <tr><th data-i18n="ms.th.kvsize">KV 常驻</th><td id="ms-kvsize">—</td></tr>
+        <tr><th data-i18n="ms.th.cache">专家缓存</th><td id="ms-cache">—</td></tr>
+        <tr><th data-i18n="ms.th.vision">图片编码器</th><td id="ms-vision-size">—</td></tr>
+        <tr><th data-i18n="ms.th.reserve">显存保留</th><td id="ms-reserve-size">—</td></tr>
+        <tr><th data-i18n="ms.th.total">合计（估算）</th><td id="ms-total">—</td></tr>
+        <tr><th data-i18n="ms.th.gpu">显卡</th><td id="ms-gpu">—</td></tr>
+        <tr><th data-i18n="ms.th.live">引擎实报</th><td id="ms-live">—</td></tr>
+      </table>
+      <p class="muted" id="ms-est-note">—</p>
+      <p class="muted" id="ms-cfg-note">—</p>
+      <p class="muted" data-i18n="ms.note">这四样都是引擎本来就认的参数（<code>--max-context</code> /
+        <code>--kv</code> / <code>--vision</code> / <code>--vram-reserve-mib</code>）。
+        Neo 不改 <code>serve/server.py</code>，也不改 <code>setup.py</code> 写的那份
+        <code>strata-*.json</code>：改动写进 <code>neo/state/configs/</code> 里的一份覆盖配置，
+        启动时把 <code>--config</code> 指到它。删掉那份就是原样。</p>
     </div>
   </section>
 
   <section id="page-chat" class="page">
     <div class="frame-bar">
       <span id="chat-url" class="path muted"></span>
-      <button id="chat-reload">重载</button>
-      <button id="chat-open">在浏览器打开</button>
+      <button id="chat-reload" data-i18n="frame.reload">重载</button>
+      <button id="chat-open" data-i18n="frame.open">在浏览器打开</button>
     </div>
     <iframe id="chat-frame" class="frame" src="about:blank"></iframe>
   </section>
@@ -130,8 +209,8 @@
   <section id="page-monitor" class="page">
     <div class="frame-bar">
       <span id="monitor-url" class="path muted"></span>
-      <button id="monitor-reload">重载</button>
-      <button id="monitor-open">在浏览器打开</button>
+      <button id="monitor-reload" data-i18n="frame.reload">重载</button>
+      <button id="monitor-open" data-i18n="frame.open">在浏览器打开</button>
     </div>
     <iframe id="monitor-frame" class="frame" src="about:blank"></iframe>
   </section>
@@ -139,40 +218,40 @@
   <section id="page-logs" class="page">
     <div class="frame-bar">
       <span id="log-path" class="path muted"></span>
-      <button id="log-reload">刷新</button>
-      <button id="log-open">用记事本打开</button>
+      <button id="log-reload" data-i18n="log.reload">刷新</button>
+      <button id="log-open" data-i18n="log.open">用记事本打开</button>
     </div>
     <pre id="log-body" class="log"></pre>
   </section>
 
   <section id="page-connect" class="page">
     <div class="panel">
-      <h3>局域网与 token</h3>
+      <h3 data-i18n="panel.lan">局域网与 token</h3>
       <table>
-        <tr><th>状态</th><td id="lan-note">—</td></tr>
-        <tr><th>本机地址</th><td id="lan-loopback" class="path">—</td></tr>
-        <tr><th>局域网地址</th><td id="lan-bases" class="path">—</td></tr>
-        <tr><th>token</th><td><span id="lan-key">—</span>
+        <tr><th data-i18n="lan.th.state">状态</th><td id="lan-note">—</td></tr>
+        <tr><th data-i18n="lan.th.loopback">本机地址</th><td id="lan-loopback" class="path">—</td></tr>
+        <tr><th data-i18n="lan.th.bases">局域网地址</th><td id="lan-bases" class="path">—</td></tr>
+        <tr><th data-i18n="lan.th.key">token</th><td><span id="lan-key">—</span>
           <input id="lan-key-value" class="path keyval hidden" type="text" readonly
                  spellcheck="false" autocomplete="off" autocapitalize="off"></td></tr>
-        <tr><th>防火墙</th><td id="lan-firewall" class="path">—</td></tr>
+        <tr><th data-i18n="lan.th.firewall">防火墙</th><td id="lan-firewall" class="path">—</td></tr>
       </table>
       <div class="row">
-        <button id="lan-token" class="primary">生成 token</button>
-        <button id="lan-copy-key">复制 token</button>
-        <button id="lan-copy-base">复制服务地址</button>
-        <button id="lan-copy-fw">复制防火墙命令</button>
+        <button id="lan-token" class="primary" data-i18n="lan.token">生成 token</button>
+        <button id="lan-copy-key" data-i18n="lan.copy.key">复制 token</button>
+        <button id="lan-copy-base" data-i18n="lan.copy.base">复制服务地址</button>
+        <button id="lan-copy-fw" data-i18n="lan.copy.fw">复制防火墙命令</button>
       </div>
-      <p class="muted">绑定地址在「设置」页改（0.0.0.0 = 也听局域网）。绑了局域网就必须有
+      <p class="muted" data-i18n="lan.note">绑定地址在「设置」页改（0.0.0.0 = 也听局域网）。绑了局域网就必须有
          token：这台机器上任何网页都能连这个端口。生成 token 后要点「停止」再「启动」，
          正在跑的服务才会按这把 key 认。「复制 token」取的是当前生效的那把，只有本机
          （127.0.0.1）来的请求能拿到完整 key，完整 key 只显示在这一个输入框里。</p>
     </div>
 
     <div class="panel">
-      <h3>编码 agent 一键接入</h3>
+      <h3 data-i18n="panel.agents">编码 agent 一键接入</h3>
       <div id="agents" class="agents"></div>
-      <p class="muted">每一行就一条命令：复制到终端跑，Neo 把服务地址、token、模型与上下文
+      <p class="muted" data-i18n="agents.note">每一行就一条命令：复制到终端跑，Neo 把服务地址、token、模型与上下文
          都算好，直接把 agent 带上下拉起来（加 --no-launch 只打印命令）。Codex / OpenCode /
          OpenClaw 认配置文件，点「写进配置」会先把它现有的配置备份成 .neo-bak 再合并
          （解析不了的文件 Neo 不动）。连远程那台 Strata：设 NEO_SERVER_URL 与 NEO_API_KEY
@@ -180,12 +259,12 @@
     </div>
 
     <div class="panel">
-      <h3>安装向导</h3>
+      <h3 data-i18n="panel.wizard">安装向导</h3>
       <div id="wizard-steps" class="steps"></div>
       <div class="row">
-        <button id="wizard-refresh">重新探测网络</button>
-        <button id="wizard-run" class="primary">开始安装</button>
-        <button id="wizard-copy">复制安装命令</button>
+        <button id="wizard-refresh" data-i18n="wizard.refresh">重新探测网络</button>
+        <button id="wizard-run" class="primary" data-i18n="wizard.run">开始安装</button>
+        <button id="wizard-copy" data-i18n="wizard.copy">复制安装命令</button>
       </div>
       <p class="muted" id="wizard-cmd"></p>
       <pre id="wizard-log" class="log small"></pre>
@@ -194,17 +273,18 @@
 
   <section id="page-settings" class="page">
     <div class="panel">
-      <h3>启动设置</h3>
-      <label>Strata 端口<input id="set-port" type="number" min="1024" max="65535"></label>
-      <label>绑定地址<input id="set-host" type="text" placeholder="127.0.0.1"></label>
-      <label>API key<input id="set-key" type="text" placeholder="留空 = 本机免密钥"></label>
-      <div class="row"><button id="set-save" class="primary">保存</button><span id="set-note" class="muted"></span></div>
-      <p class="muted">端口改了要重启 Neo 才生效。绑定到 0.0.0.0 会让局域网里的人都能用这个模型，
+      <h3 data-i18n="panel.settings">启动设置</h3>
+      <label><span data-i18n="set.port">Strata 端口</span><input id="set-port" type="number" min="1024" max="65535"></label>
+      <label><span data-i18n="set.host">绑定地址</span><input id="set-host" type="text" placeholder="127.0.0.1"></label>
+      <label><span data-i18n="set.key">API key</span><input id="set-key" type="text" placeholder="留空 = 本机免密钥"></label>
+      <div class="row"><button id="set-save" class="primary" data-i18n="set.save">保存</button><span id="set-note" class="muted"></span></div>
+      <p class="muted" data-i18n="set.note">端口改了要重启 Neo 才生效。绑定到 0.0.0.0 会让局域网里的人都能用这个模型，
          那时必须填 API key（局域网开放与接入向导在 M3）。</p>
     </div>
   </section>
 </main>
 
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

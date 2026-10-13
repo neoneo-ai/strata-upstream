@@ -472,7 +472,8 @@ class TestModelPageSwitch(unittest.TestCase):
         self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
 
     def test_switch_button_is_labelled_as_a_switch(self):
-        self.assertIn('btn.textContent = cur ? "正在用" : (busy ? "换过去" : "启动它")', self.js)
+        # 文案过一遍 t()（中英切换在 neo/web/i18n.js），所以认的是包起来的那一行的三个标签
+        self.assertIn('btn.textContent = cur ? t("正在用") : (busy ? t("换过去") : t("启动它"))', self.js)
 
     def test_switch_button_says_what_it_stops_first(self):
         self.assertIn("btn.title", self.js)
@@ -615,7 +616,8 @@ class TestModelsPage(unittest.TestCase):
         self.css = (ROOT / "neo" / "web" / "style.css").read_text(encoding="utf-8")
 
     def test_the_models_page_loads_and_polls_the_catalog(self):
-        self.assertIn('if (name === "models") { loadModels(); loadCatalog(); }', self.js)
+        # 模型页现在还要拉「在跑的服务」与「远程加载」两栏，所以认前缀，不认整行的结尾
+        self.assertIn('if (name === "models") { loadModels(); loadCatalog();', self.js)
         self.assertIn('if ($("page-models").classList.contains("on")) loadCatalog()', self.js)
 
     def test_every_route_the_catalog_calls_is_in_the_server(self):
@@ -663,6 +665,97 @@ class TestModelsPage(unittest.TestCase):
         self.assertIn('$("cat-refresh").onclick = () => loadCatalog(true)', self.js)
         self.assertIn('$("cat-src-retest").onclick = () => loadCatalog(true)', self.js)
         self.assertIn('fresh ? "?fresh=1" : ""', self.js)
+
+
+class TestLanguageAndTheme(unittest.TestCase):
+    """中英切换与明暗主题（neo/web/i18n.js）。
+
+    默认必须是中文 + 暗色：localStorage 里没有记录时页面与切换功能上线前逐字一样。
+    两条机制各自守着：静态文案走 data-i18n + BLOCKS（整块换 innerHTML），动态文案走
+    t("中文")（表里没有就原样回）。整块换 innerHTML 的代价是把元素里的子节点一起换掉，
+    所以带 input/select 的元素一律不能挂 data-i18n —— 挂上去英文一生效控件就没了。
+    """
+
+    def setUp(self):
+        self.js = (ROOT / "neo" / "web" / "app.js").read_text(encoding="utf-8")
+        self.i18n = (ROOT / "neo" / "web" / "i18n.js").read_text(encoding="utf-8")
+        self.html = (ROOT / "neo" / "web" / "index.html").read_text(encoding="utf-8")
+        self.css = (ROOT / "neo" / "web" / "style.css").read_text(encoding="utf-8")
+        self.server = (ROOT / "neo" / "console_server.py").read_text(encoding="utf-8")
+
+    def test_the_page_loads_i18n_before_app(self):
+        self.assertIn('<script src="/i18n.js"></script>\n<script src="/app.js"></script>', self.html)
+        self.assertIn('"/i18n.js"', self.server.replace("'", '"'), "服务不发 /i18n.js")
+
+    def test_defaults_are_chinese_and_dark(self):
+        self.assertIn('let got = "zh"', self.i18n)
+        self.assertIn('let got = "dark"', self.i18n)
+        self.assertIn('return got === "en" ? "en" : "zh"', self.i18n)
+        self.assertIn('return got === "light" ? "light" : "dark"', self.i18n)
+        # 中文时 applyLang 什么都不做：默认那份中文页面一个字都不动
+        self.assertIn('if (neoLang() === "zh") return;', self.i18n)
+
+    def test_every_static_key_has_an_english_block(self):
+        keys = set(re.findall(r'data-i18n="([^"]+)"', self.html))
+        defined = set(re.findall(r"^  '([^']+)':", self.i18n, re.M))
+        self.assertTrue(keys, "index.html 里没有一处 data-i18n")
+        missing = sorted(keys - defined)
+        self.assertEqual(missing, [], f"data-i18n 键在 i18n.js 里没有英文：{missing}")
+
+    def test_no_data_i18n_wraps_a_form_control(self):
+        risky = re.findall(r'<[^>]*data-i18n="[^"]*"[^>]*>(?:(?!</).)*?<(?:input|select)',
+                           self.html, re.S)
+        self.assertEqual(risky, [], f"整块换 innerHTML 会连控件一起删掉：{risky[:2]}")
+
+    def test_the_two_pref_buttons_are_wired_in_i18n(self):
+        for ident in ("btn-lang", "btn-theme"):
+            self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
+            self.assertIn(f'getElementById("{ident}")', self.i18n, f"i18n.js 没接 {ident}")
+        self.assertIn('localStorage.setItem(LANG_KEY', self.i18n)
+        self.assertIn('localStorage.setItem(THEME_KEY', self.i18n)
+
+    def test_theme_switch_is_css_variables_only(self):
+        self.assertIn('html[data-theme="light"]', self.css)
+        self.assertIn('document.documentElement.dataset.theme', self.i18n)
+        # 组件里不许再写死的深色：十六进制只许出现在 :root 与 html[data-theme="light"] 两块里
+        body = re.sub(r":root \{[^}]*\}|html\[data-theme=\"light\"\] \{[^}]*\}", "", self.css)
+        left = re.findall(r"#[0-9a-fA-F]{6}", body)
+        self.assertEqual(left, ["#08111f"] if "#08111f" in left else [],
+                         f"组件里还有写死的颜色：{left}")
+
+    def test_app_routes_every_dynamic_string_through_t(self):
+        self.assertIn("const t = (s) => (I18N.t ? I18N.t(s) : s);", self.js)
+        self.assertIn("el.textContent = t(STATE_TEXT[state] || state)", self.js)
+        # 带数字的服务端句子走模板表，认不得的原样回
+        self.assertIn("function tNum(s)", self.js)
+        self.assertIn("return t(text);", self.js)
+
+    def test_the_model_settings_page_is_wired(self):
+        for ident in ("ms-model", "ms-context", "ms-kv", "ms-kvres", "ms-reserve",
+                      "ms-vision", "ms-save", "ms-apply", "ms-reset", "ms-note",
+                      "ms-est", "ms-live", "ms-gpu", "ms-total"):
+            self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
+        self.assertIn('ms_get: ["GET", "/neo/model/settings"]', self.js)
+        self.assertIn('ms_set: ["POST", "/neo/model/settings"]', self.js)
+        self.assertIn('if (name === "modelset") loadModelSettings();', self.js)
+        self.assertIn('action: "reset"', self.js)
+        server = self.server
+        self.assertIn('"/neo/model/settings"', server.replace("'", '"'))
+
+    def test_the_upstream_and_remote_panels_are_wired(self):
+        for ident in ("up-list", "up-note", "up-reload", "up-open",
+                      "rm-url", "rm-key", "rm-list", "rm-token", "rm-copy", "rm-note"):
+            self.assertIn(f'id="{ident}"', self.html, f"index.html 里没有 {ident}")
+        self.assertIn('upstream: ["GET", "/neo/upstream"]', self.js)
+        self.assertIn('remote: ["GET", "/neo/remote"]', self.js)
+        self.assertIn('"?what=models"', self.js)
+        # 完整 key 只在点复制时取（reveal 只读、只认本机请求），页面里不写死
+        self.assertIn('await revealKey()', self.js)
+        self.assertIn("fillRemoteKey", self.js)
+
+    def test_the_new_blocks_have_styles(self):
+        for needle in (".nav-prefs", "#btn-lang", ".up-row", ".ms-grid", "#ms-model"):
+            self.assertIn(needle, self.css, f"style.css 里没有 {needle}")
 
 
 if __name__ == "__main__":

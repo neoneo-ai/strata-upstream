@@ -183,7 +183,7 @@ class StrataEngine(EngineAdapter):
 
     def plan(self, port: int, host: str = "127.0.0.1", api_key: str = "",
              model_id: str = "", gpu=None) -> LaunchPlan:
-        from .. import state
+        from .. import model_settings, state
 
         cfg = None
         items = self.discover()
@@ -197,8 +197,15 @@ class StrataEngine(EngineAdapter):
                                     "（跑 START-HERE.bat 装模型，或用 --model 换一个配置）")
 
         python = state.python_executable(self.root)
+        # 有覆盖配置（模型设置页改过上下文/KV/图片/显存保留）就指过去：--config 是
+        # serve/server.py 已有的参数，Neo 不给它加参数，也不动上游那份 strata-*.json
+        cfg_file = model_settings.config_path_for(cfg["file"])
+        context = cfg["context"]
+        if cfg_file != str(cfg["file"]):
+            context = model_settings.settings_of(
+                model_settings.read_config(cfg_file))["context"] or context
         argv = [python, str(self.root / "serve" / "server.py"),
-                "--engine", "strata", "--config", cfg["file"], "--port", str(port)]
+                "--engine", "strata", "--config", cfg_file, "--port", str(port)]
         if host and host != "127.0.0.1":
             argv += ["--host", host]
         if api_key:
@@ -208,10 +215,11 @@ class StrataEngine(EngineAdapter):
         return LaunchPlan(argv=argv, cwd=str(self.root), env=None,
                           log_path=str(state.server_log_path(cfg["name"])),
                           port=port, host=host, model=cfg["name"], engine=self.name,
-                          label=f"{cfg['name']} · {cfg['context']} 上下文" if cfg["context"] else cfg["name"],
-                          ready_timeout_s=self.ready_timeout_s(cfg["context"]),
-                          extra={"config": cfg["file"], "vision": cfg["vision"],
-                                 "backend": cfg["backend"]})
+                          label=f"{cfg['name']} · {context} 上下文" if context else cfg["name"],
+                          ready_timeout_s=self.ready_timeout_s(context),
+                          extra={"config": cfg_file, "vision": cfg["vision"],
+                                 "backend": cfg["backend"],
+                                 "overlay": cfg_file != str(cfg["file"])})
 
 
 if __name__ == "__main__":                                      # 快速看一眼这台机器装了什么模型

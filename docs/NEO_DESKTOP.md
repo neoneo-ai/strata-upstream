@@ -148,6 +148,17 @@ POST /neo/install            {"family":"qwen","model":"IQ3_S","source":"modelsco
 POST /neo/source             {"source":"probe|huggingface|modelscope|mirror"} 记住下载源，
                              存 neo/state/source.json，回同一份清单；认不得的源回一条说明，
                              什么都不写、不起子进程
+GET  /i18n.js                中英切换与明暗主题的脚本（与 /app.js 一样 no-store）
+GET  /neo/upstream?what=…    上游面板的三块（models / status / metrics），由 Neo 代读：浏览器
+                             在 8083 的页面上直连 8080 会被 CORS 挡住，API key 也不出 Neo
+GET  /neo/remote             远程接入那一行命令：地址、模型、上下文算好了给，key 只给占位符，
+                             复制那一下才由 /neo/token 的 reveal 填上
+GET  /neo/model/settings     一个模型的运行参数（上下文 / KV / 图片 / 显存保留）+ 每栏的可选项
+     ?model=ID              + 显存估算 + 有没有覆盖配置 + 要不要重启；没点名就用第一个配置，
+                             点了名找不到就把清单列出来，不悄悄换成别的模型
+POST /neo/model/settings     写覆盖配置 neo/state/configs/strata-<id>.neo.json（上游那份一个
+                             字节都不动）；越界与认不得的键挡回来并说明；{"action":"reset"}
+                             删掉覆盖配置，下一次启动回到 setup.py 写的那份
 ```
 
 ## 接入页（M2/M3）：装模型、开局域网、接四个 agent
@@ -268,6 +279,34 @@ python -m neo.connect claude --port 8080 --key sk-neo-... --model qwen3.8-flash-
 python -m neo.connect codex --persist --lan
 python -m neo.wizard --check
 ```
+
+## 模型设置页与语言/主题（`neo/model_settings.py`、`neo/gguf_meta.py`、`neo/web/i18n.js`）
+
+模型设置页改的是**一个模型的启动参数**，四栏：上下文长度（`--max-context`）、KV 类型（`--kv`）、
+KV 常驻单元（`--kv-resident`）、显存保留（`--vram-reserve-mib`），外加图片开关（`--vision` 与 `vision` 段）。
+写法是**覆盖配置**：`setup.py` 写的那份 `strata-*.json` 只读，改动写进 `neo/state/configs/strata-<id>.neo.json`，
+启动时 `config_path_for()` 指到哪份就用哪份；删掉覆盖配置就是原样。四个数怎么来的都摆在页面上：
+KV 显存 = 常驻单元 × 每单元每层字节 × 层数，每单元每层的字节数出自 `bench/results/2026-09-27-kv-q4/README.md`
+（q4_0 576 B、int8 1,056 B），层数读 GGUF 头部（`neo/gguf_meta.py`，只读头部，不加载模型）。
+
+三个坑，测试守着：
+
+- **关图片要两件一起做**：`serve/server.py:2348`（#1322）看见配置里 `vision` 段还在就把 `--vision` 加回去，
+  所以只删 flag 等于没关。Neo 删 flag 的同时把段置空，原段存进 `neo_vision_saved`，再开图片时还原回去
+  （mmproj 的路径 Neo 不猜，只还给人家原来那份）。
+- **`--kv-resident` 带值**：只删 flag 会把那个数变成一个孤零零的位置参数，引擎会把它当模型文件。删就连值一起删。
+- **页面传的是 "on"/"off" 字符串**：`bool("off")` 是 True，所以字符串逐字认（`on/true/yes/1/开`、
+  `off/false/no/0/关`），认不得的报错，不猜。
+
+覆盖配置 = 上游那份 + 这次的改动，所以跟上游一样的键不写进去；这次要的跟上游一样时，
+已有的覆盖配置会被删掉（回到原样），而不是留着一份没用的。点了名却认不得的 id 不悄悄换成别的模型。
+
+语言与主题只在页面里，Neo 与上游都不记：`neo/web/i18n.js` 认 `data-i18n` 键（静态文案整块换）与
+`app.js` 里的 `t("中文")`（动态文案），记忆键 `neo.lang` / `neo.theme` 存在 localStorage 里。
+**没有记忆时页面与以前逐字一样**（中文 + 暗色），i18n.js 不改一处文字。主题只换 CSS 变量：
+`style.css` 里 `html[data-theme="light"]` 覆盖 `:root` 那一批变量，组件一律用 `var(--…)`，
+所以换主题不改任何一条组件规则（`neo/tests/test_ui.py` 里有一条量这个：`:root` 与
+`html[data-theme="light"]` 之外的规则里不许出现硬编码颜色）。
 
 ## 模型配置的形状（`strata-*.json`）
 
@@ -561,13 +600,15 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
                    neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console \
                    neo.tests.test_netprobe neo.tests.test_tokens neo.tests.test_connectors \
                    neo.tests.test_wizard neo.tests.test_connect_api \
-                   neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start
+                   neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start \
+                   neo.tests.test_model_settings
 ```
 
-329 个测试，合起来跑 243.4 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
-不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的三个模块上，单独量的数：
-`test_supervisor` 56 秒、`test_console` 9.1 秒、`test_connect_api` 6.7 秒，其余十二个模块合起来 14 秒 ——
-日常开发跑那十二个就够（命令见 AGENTS.md，13.6 秒）。两处实测改掉的等法（2026-10-13）：
+385 个测试，合起来跑 289.3 秒（Windows 11，Python 3.13.15，`serve/server.py --engine mock` 起真实进程，
+不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程的模块上，单独量的数：
+`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、`test_connect_api` 6.7 秒，
+其余十三个模块合起来 16 秒 ——
+日常开发跑那十三个就够（命令见 AGENTS.md，16.0 秒）。两处实测改掉的等法（2026-10-13）：
 `neo_console_info` 先摸一次 TCP（0.05 秒）再发那个 HTTP 请求，没人听的端口不再等满 0.8 秒超时；
 控制台线程 `serve_forever(poll_interval=0.05)`，`stop()` 从 0.51 秒到 0.06 秒。监督器测试里
 `poll_s` 0.25→0.05、`probe_s` 0.4→0.1、`wait()` 每 0.05 秒问一次，等的是条件不是秒数：
@@ -589,8 +630,13 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
 - `test_console`：状态接口、静态页 no-store、起不来的引擎停在 halted、外站 Origin 与外站 Host 403、
   设置落盘且不回显 API key；**页面点"打开"走的是服务**（`POST /neo/open` 带 page、`POST /neo/open-log`、
   没壳时回 503、外站 Origin 403 且壳没被调用）；**第二个实例那句话**（窗口模式说 pid 与界面地址、
-  浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）。
-- `test_ui`（44 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
+  浏览器模式说"没有窗口"并给出装 pywebview 的命令、记录里的进程没了说"已经没了"并清掉过期记录）；
+  **模型设置那组**（`TestModelSettingsEndpoint`，10 个）：`GET /neo/model/settings` 的表单形状、
+  `?model=` 认 id 也认文件名、没点名用第一个配置、点了名找不到就列清单且**不写盘**、
+  `POST` 按 `app.js` 发的那份表单写覆盖配置（`--max-context` 与 `--vision` 成、`--kv-resident` 不成对时
+  被删）、越界回 `ok:false` 加说明且**配置字节未动**、`action:"reset"` 删掉覆盖配置且上游那份未动、
+  改了要重启的东西回 `restart_required` 并带 pid。
+- `test_ui`（52 个）：闸门在别的线程占住锁时 `write()` 立刻返回并把行计入丢弃数、丢弃数要说出来、
   没人抢锁时输出不被改；`state.log()` 常态只追加（20 条 = 20 行、0 个 `\r`）、超过 `LOG_MAX`
   才裁且只留尾部、6 线程并发 90 条不丢不咬；看门狗无窗口不起、线程现场有界且带线程名、
   `evaluate_js` 挂住时日志出现"没应答"与 `neo-ui-probe` 那一帧、窗口正常应答时不写日志；
@@ -600,7 +646,13 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   在顶层**（内嵌框停在 `about:blank` 的那次实测就是被吞进函数体）；**状态页六张卡片只经过
   `num()` / `count()`**（`m.requests` 这类不许直接嵌进模板串，`count()` 对列表与对象回"—"）；
   **打包环境缺 pywebview 时
-  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`。
+  `build_exe` 拒绝打包**并给出装包的命令，`--no-webview` 真的传到 `build(allow_no_webview=True)`；
+  **语言与主题那一组**（`TestLanguageAndTheme`，8 个）：`i18n.js` 语法配平、`BLOCKS`/`PHRASES`/`ATTRS`
+  齐且 `applyLang`/`applyTheme`/`init` 在顶层、`index.html` 里每一个 `data-i18n` 键在 `BLOCKS` 里
+  （漏一个键那块文字就永远不换）、`data-i18n` 不包着控件（包着就把下拉框与按钮抹了）、
+  `app.js` 里每个 `t("中文")` 字面量在 `PHRASES` 里、HTML 里的中文 `placeholder`/`title` 在 `ATTRS` 里、
+  顶栏两个按钮与 `.nav-prefs` 在 HTML 与 CSS 里、**`:root` 与 `html[data-theme="light"]` 之外的规则里
+  不许出现硬编码颜色**（有一条组件规则写死了 `#fff`，浅色主题下它就是一块白斑）。
 - `test_logging`（25 个）：连续写 8 条后日志里 0 个 `\r`（CRLF 放大的回归）、20 万字符的单行被裁并标出
   原长、清洗尾部不丢历史；`tail_text` 去 `\r` 与控制字符、行数封顶并标"已省略"；闸门在 18 亿字符灌入下
   输出有界、说明折叠与丢弃了多少、正常输出不被改；**一次 print 的 40 行整块不被裁**（CLI 的 JSON
@@ -611,6 +663,13 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `RecursionError` 不格式化 traceback、普通 traceback 行数与总长封顶、excepthook 装得上；
   `safe_resolve` 把 5000 段 `.SyncRoot` 截到 64 段以内、相对路径与 `..` 正常、`is_reparse` 对普通目录回 False；
   `instance.json` 记下/读回/清掉、只补 `mode` 不抹 `root`、进程没了算过期。
+- `test_model_settings`（38 个）：上面那三个坑各有一条（关图片要同时删段、`--kv-resident` 连值一起删、
+  `"off"` 不算真）；外加 `view` 的表单形状（`model_id`/`config_name`/`fields`/`options`/`estimate`/
+  `overridden`/`restart_required`）、覆盖配置落在 `neo/state/configs/` 且上游那份字节未动、`clear` 后
+  回到原样、跟上游一样的键不写进覆盖配置（一样的那份被删掉）、`config_path_for` 指哪份用哪份、
+  显存估算（q4_0 16 单元 = 128 MiB、int8 同形状 = 234 MiB、关掉 KV 常驻 = 0）、GGUF 头部
+  （合成文件与真 `qwen3.8-flash-mlx-32b-ikd-q4.p1.gguf` 的 48 层、坏文件与截断文件不抛、
+  读头部不超过 1 MiB）。
 - `test_netprobe`（11 个）：注入的 `connect` 记录地址族/端口/超时，三个目标都走 443；全通建议默认源、
   HF 断 + ModelScope 通才建议 `--source modelscope`、只有镜像通时只说 `HF_ENDPOINT` 而不换源、
   全断时不推荐任何源；缓存读写与坏文件回空、`probe_cached` 不联网、`describe` 说得出建议。

@@ -1,8 +1,24 @@
-/* Neo Strata 控制台：深色、左侧导航、卡片主页。配色跟着 Strata 网页的深色主题走。 */
+/* Neo Strata 控制台：深色、左侧导航、卡片主页。配色跟着 Strata 网页的深色主题走。
+   明暗切换只换这里的变量（i18n.js 给 <html> 挂 data-theme="light"）：组件一律用 var(--…)，
+   所以换主题不用改任何一条组件规则。没有 data-theme 时就是下面这份深色，与以前一样。 */
 :root {
   --bg: #0f1115; --bg2: #161a21; --bg3: #1d222b; --line: #262c37;
   --fg: #e6e9ef; --muted: #8b94a5; --accent: #4f9cf9; --ok: #3fb97a;
   --warn: #e0a43a; --err: #e05757; --idle: #6b7484;
+  --line-strong: #3a4250; --ok-line: #2c5c42; --warn-line: #5a4a25;
+  --err-line: #5c2f2f; --accent-line: #2f4b70;
+  --code-bg: #0b0d11; --diag-bg: #2a2118; --diag-line: #5a4a25; --diag-fg: #f0d9a8;
+  --primary-fg: #08111f;
+}
+/* 亮色：同一批变量换一套值。--code-bg 比 --bg3 深一档，命令框与日志框在亮背景上仍是"代码块"。 */
+html[data-theme="light"] {
+  --bg: #f4f6f9; --bg2: #ffffff; --bg3: #eaeef4; --line: #d5dbe4;
+  --fg: #1c2230; --muted: #64708a; --accent: #1f6feb; --ok: #1a7f45;
+  --warn: #9a6700; --err: #b42318; --idle: #7b8598;
+  --line-strong: #b9c2cf; --ok-line: #a6d8bb; --warn-line: #e2c489;
+  --err-line: #e6a6a1; --accent-line: #a9c6ef;
+  --code-bg: #f7f9fc; --diag-bg: #fff6e5; --diag-line: #e2c489; --diag-fg: #6b4e13;
+  --primary-fg: #f7faff;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -43,8 +59,8 @@ button {
   background: var(--bg3); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
   padding: 7px 13px; cursor: pointer; font-size: 13px;
 }
-button:hover { border-color: #3a4250; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 600; }
+button:hover { border-color: var(--line-strong); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--primary-fg); font-weight: 600; }
 /* 禁用要看得出来：以前 CSS 里没有 :disabled，被禁用的"启动"照样是亮蓝主按钮，
    服务已经跑着时页面读起来像"该点启动"（实测 2026-10-12，state=running loaded=true）。
    主按钮的蓝色跟着"此刻能按的那个"走（app.js 里 toggle），禁用的那个一律是灰的。 */
@@ -60,11 +76,12 @@ button.hidden, .hidden { display: none; }
   padding: 3px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap;
   background: var(--bg3); color: var(--idle); border: 1px solid var(--line);
 }
-.pill.running { color: var(--ok); border-color: #2c5c42; }
-.pill.starting, .pill.restarting { color: var(--warn); border-color: #5a4a25; }
-.pill.halted { color: var(--err); border-color: #5c2f2f; }
+.pill.running { color: var(--ok); border-color: var(--ok-line); }
+.pill.starting, .pill.restarting { color: var(--warn); border-color: var(--warn-line); }
+.pill.halted { color: var(--err); border-color: var(--err-line); }
 /* 端口上有一个脚本先起来的服务：也是"在跑"，颜色与运行中一致，文字里说清是谁启动的 */
-.pill.external { color: var(--ok); border-color: #2c5c42; }
+.pill.external { color: var(--ok); border-color: var(--ok-line); }
+.pill.warn { color: var(--warn); border-color: var(--warn-line); }
 
 /* ---------- 卡片 ---------- */
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
@@ -90,7 +107,7 @@ th { color: var(--muted); width: 92px; }
 .guide h2 { margin: 0 0 8px; font-size: 16px; }
 .guide p { margin: 0; color: var(--muted); line-height: 1.7; }
 .diag {
-  background: #2a2118; border: 1px solid #5a4a25; color: #f0d9a8;
+  background: var(--diag-bg); border: 1px solid var(--diag-line); color: var(--diag-fg);
   border-radius: 10px; padding: 12px 14px;
 }
 
@@ -106,9 +123,9 @@ th { color: var(--muted); width: 92px; }
 
 .frame-bar { display: flex; align-items: center; gap: 8px; }
 .frame-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.frame { flex: 1; min-height: 420px; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.frame { flex: 1; min-height: 420px; width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); }
 .log {
-  flex: 1; min-height: 380px; overflow: auto; background: #0b0d11; border: 1px solid var(--line);
+  flex: 1; min-height: 380px; overflow: auto; background: var(--code-bg); border: 1px solid var(--line);
   border-radius: 10px; padding: 12px; font-family: ui-monospace, Consolas, monospace;
   font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0;
 }
@@ -124,12 +141,12 @@ label input {
 .agent { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
   background: var(--bg3); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
 .agent .name { font-weight: 600; min-width: 88px; }
-.quick { flex: 1 1 320px; min-width: 0; padding: 6px 10px; background: #0b0d11;
+.quick { flex: 1 1 320px; min-width: 0; padding: 6px 10px; background: var(--code-bg);
   border: 1px solid var(--line); border-radius: 7px; font-family: ui-monospace, Consolas, monospace;
   font-size: 12px; white-space: nowrap; overflow: auto; user-select: all; }
 .agent-more { margin: -2px 0 6px; padding: 0 12px; }
 .cmd {
-  margin: 8px 0 0; padding: 8px 10px; background: #0b0d11; border: 1px solid var(--line);
+  margin: 8px 0 0; padding: 8px 10px; background: var(--code-bg); border: 1px solid var(--line);
   border-radius: 7px; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
   white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;
 }
@@ -141,7 +158,7 @@ label input {
    平时这一行只有掩码。全选好选，所以给足宽度与等宽字体。 */
 .keyval {
   display: block; width: 100%; margin-top: 6px; padding: 6px 9px;
-  background: #0b0d11; color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+  background: var(--code-bg); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
 }
 .keyval.hidden { display: none; }   /* .keyval 在后面，会把上面的 .hidden 顶掉，所以补这一条 */
 
@@ -162,9 +179,9 @@ label input {
   font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 400;
   background: var(--bg2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
 }
-.tag.rec { color: var(--accent); border-color: #2f4b70; }
-.tag.ok { color: var(--ok); border-color: #2c5c42; }
-.tag.warn { color: var(--warn); border-color: #5a4a25; }
+.tag.rec { color: var(--accent); border-color: var(--accent-line); }
+.tag.ok { color: var(--ok); border-color: var(--ok-line); }
+.tag.warn { color: var(--warn); border-color: var(--warn-line); }
 
 /* 模型页的"下载源"那一排：自动 / Hugging Face / ModelScope / hf-mirror 镜子 */
 .src { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
@@ -175,5 +192,35 @@ label input {
 }
 .src button { padding: 6px 10px; }
 .src-note { font-size: 12px; line-height: 1.6; margin: 2px 0 10px; }
+
+/* ---------- 左下角的语言 / 主题两个按钮（i18n.js 认这两个 id）---------- */
+.nav-prefs { display: flex; gap: 6px; margin-top: 8px; }
+#btn-lang, #btn-theme {
+  min-width: 34px; padding: 5px 8px; font-size: 13px; line-height: 1;
+  background: var(--bg3); color: var(--muted); border: 1px solid var(--line); border-radius: 7px;
+}
+#btn-lang:hover, #btn-theme:hover { color: var(--fg); border-color: var(--line-strong); }
+
+/* ---------- 模型页：在跑的服务那一栏（Neo 代发上游 /v1/models、/status、/metrics）---------- */
+.up { display: flex; flex-direction: column; gap: 4px; }
+.up-row { display: flex; gap: 10px; align-items: baseline; border-bottom: 1px dashed var(--line);
+  padding: 4px 0; font-size: 13px; }
+.up-row .k { color: var(--muted); flex: 0 0 92px; }
+.up-row .v { flex: 1; min-width: 0; word-break: break-word; }
+
+/* ---------- 模型设置页：四栏 + 估算表 ---------- */
+.ms-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 4px 16px; margin-top: 8px; }
+.ms-grid label { margin: 8px 0; }
+.ms-grid select {
+  display: block; margin-top: 4px; width: 100%; background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; font: inherit;
+}
+.ms-grid .chk { display: flex; align-items: center; gap: 8px; }
+.ms-grid .chk input { width: auto; margin: 0; }
+#ms-est { margin-top: 12px; }
+#ms-est th { width: 110px; }
+#ms-model { background: var(--bg3); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 9px; font: inherit; min-width: 240px; }
 
 

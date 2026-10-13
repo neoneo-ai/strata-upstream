@@ -35,15 +35,15 @@ user's agent configs: `python -m unittest
 neo.tests.test_supervisor neo.tests.test_engines neo.tests.test_upstream_api neo.tests.test_console
 neo.tests.test_logging neo.tests.test_ui neo.tests.test_netprobe neo.tests.test_tokens
 neo.tests.test_connectors neo.tests.test_models neo.tests.test_wizard neo.tests.test_connect_api
-neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start` (329 tests, 243.4 s on Windows 11 /
-Python 3.13, using `serve/server.py --engine mock`; 288.6 s on the earlier 312-test run). The three modules that
-start real processes are the whole cost - measured on their own: `test_supervisor` 56 s, `test_console` 9.1 s,
-`test_connect_api` 6.7 s; the other twelve together are 14 s. For a quick pass while developing, run those twelve
-and leave the three out:
+neo.tests.test_connect_cli neo.tests.test_manager_cli neo.tests.test_start neo.tests.test_model_settings`
+(385 tests, 289.3 s on Windows 11 / Python 3.13, using `serve/server.py --engine mock`; 243.4 s on the earlier
+329-test run). The modules that start real processes are the whole cost - measured on their own: `test_supervisor`
+56 s, `test_console` 25.9 s (its model-settings class starts a console server per test), `test_connect_api` 6.7 s;
+the other thirteen together are 16 s. For a quick pass while developing, run those thirteen and leave the three out:
 `python -m unittest neo.tests.test_start neo.tests.test_models neo.tests.test_ui neo.tests.test_tokens
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
-neo.tests.test_logging` (13.6 s). Neo's own
+neo.tests.test_logging neo.tests.test_model_settings` (16.0 s). Neo's own
 packages live in `neo/requirements-neo.txt`, not in `requirements.txt`.
 
 The 接入 page (`neo/web/`, tab "接入") installs models and wires coding agents: `neo/netprobe.py` probes

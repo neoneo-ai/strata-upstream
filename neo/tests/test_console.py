@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -17,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from neo import model_settings                                   # noqa: E402
 from neo import state                                          # noqa: E402
 from neo import console_server as cs                          # noqa: E402
 from neo.console_server import ConsoleServer                   # noqa: E402
@@ -292,6 +294,128 @@ class TestRunningInstance(unittest.TestCase):
         text = describe_running_instance(self.tmp)
         self.assertIn("已经没了", text, "记录里的进程没了要说清")
         self.assertFalse(state.INSTANCE.exists(), "过期记录要顺手清掉，下次就正常了")
+
+
+class TestModelSettingsEndpoint(unittest.TestCase):
+    """模型设置页的接口：读四栏、写覆盖配置、恢复原样。引擎是假的，不起进程。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name) / "root"
+        self.root.mkdir()
+        self.cfg_file = self.root / "strata-test.json"
+        self.cfg_file.write_text(json.dumps({
+            "model_name": "Qwen Test", "exe": "strata.exe", "port": 8080,
+            "args": ["model.gguf", "--max-context", "65536", "--kv", "int8",
+                     "--kv-resident", "32768", "--vram-reserve-mib", "1000", "--vision"],
+            "vision": {"mmproj": "mmproj.gguf", "gpu": True}}), encoding="utf-8")
+        self.upstream_bytes = self.cfg_file.read_bytes()
+        self._old_state = state.STATE
+        state.STATE = Path(self._tmp.name) / "state"
+        state.STATE.mkdir()
+        self.addCleanup(setattr, state, "STATE", self._old_state)
+        self.was = state.LAUNCHER.exists()
+        self.backup = state.LAUNCHER.read_bytes() if self.was else b""
+        self.sup = Supervisor(FakeAdapter(self.root), 8080)
+        self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
+        self.console.shell = RecordingShell()
+        self.url = self.console.start()
+
+    def tearDown(self):
+        self.console.stop()
+        if self.was:
+            state.LAUNCHER.write_bytes(self.backup)
+        elif state.LAUNCHER.exists():
+            state.LAUNCHER.unlink()
+
+    def get(self, path):
+        return req(self.url.rstrip("/") + path)
+
+    def post(self, path, body):
+        return req(self.url.rstrip("/") + path, method="POST", body=body)
+
+    def test_get_lists_the_models_and_the_four_settings(self):
+        code, headers, body = self.get("/neo/model/settings")
+        self.assertEqual(code, 200)
+        self.assertIn("application/json", headers.get("content-type", ""))
+        data = json.loads(body)
+        self.assertTrue(data["ok"], data.get("error"))
+        # 没点名（页面刚打开）就是第一个模型，页面一进来就有得看
+        self.assertEqual(data["id"], "strata-test.json")
+        self.assertEqual(data["settings"]["context"], 65536)
+        self.assertEqual(data["settings"]["vram_reserve_mib"], 1000)
+        self.assertTrue(data["settings"]["vision_available"])
+        self.assertFalse(data["overridden"])
+        self.assertTrue(data["choices"]["context"], "下拉要有得选")
+        self.assertEqual(data["estimate"]["kv_cells"], 32768)
+
+    def test_get_with_an_unknown_name_lists_the_ids(self):
+        data = json.loads(self.get("/neo/model/settings?model=nope.json")[2])
+        self.assertFalse(data["ok"])
+        self.assertIn("strata-test.json", data["models"])
+
+    def test_post_writes_an_overlay_and_leaves_the_upstream_file_alone(self):
+        code, _h, body = self.post("/neo/model/settings",
+                                   {"model": "strata-test.json", "context": 131072})
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"], data["notes"])
+        self.assertTrue(data["restart_required"])
+        overlay = model_settings.overlay_path(self.cfg_file)
+        self.assertTrue(overlay.is_file())
+        self.assertEqual(self.cfg_file.read_bytes(), self.upstream_bytes,
+                         "上游那份 strata-*.json 一个字节都不能动")
+        back = json.loads(self.get("/neo/model/settings?model=strata-test.json")[2])
+        self.assertTrue(back["overridden"])
+        self.assertEqual(back["settings"]["context"], 131072)
+        self.assertEqual(back["base"]["context"], 65536)
+
+    def test_out_of_range_is_refused_with_a_plain_note(self):
+        # 与这个服务里别的 POST 一样：业务上挡回来是 200 + ok:false + 给用户看的话
+        code, _h, body = self.post("/neo/model/settings",
+                                   {"model": "strata-test.json", "context": 10})
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertFalse(data["ok"])
+        self.assertTrue(data["notes"])
+        self.assertFalse(model_settings.overlay_path(self.cfg_file).is_file())
+
+    def test_the_form_shape_the_page_sends_is_accepted(self):
+        # app.js 的 msBody()：vision 是 "on"/"off" 字符串，四栏都带上
+        code, _h, body = self.post("/neo/model/settings", {
+            "model": "strata-test.json", "context": 131072, "kv": "q4_0",
+            "kv_resident": 16384, "vram_reserve_mib": 1500, "vision": "off"})
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"], data["notes"])
+        over = json.loads(model_settings.overlay_path(self.cfg_file).read_text(encoding="utf-8"))
+        self.assertNotIn("--vision", over["args"])
+        self.assertEqual(over["args"][over["args"].index("--kv") + 1], "q4_0")
+
+    def test_reset_without_an_overlay_says_it_is_already_plain(self):
+        code, _h, body = self.post("/neo/model/settings",
+                                   {"model": "strata-test.json", "action": "reset"})
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["removed"])
+
+    def test_reset_removes_the_overlay(self):
+        self.post("/neo/model/settings", {"model": "strata-test.json", "context": 131072})
+        code, _h, body = self.post("/neo/model/settings",
+                                   {"model": "strata-test.json", "action": "reset"})
+        self.assertEqual(code, 200)
+        self.assertTrue(json.loads(body)["removed"])
+        self.assertFalse(model_settings.overlay_path(self.cfg_file).is_file())
+
+    def test_unknown_model_is_refused_by_name(self):
+        code, _h, body = self.post("/neo/model/settings",
+                                   {"model": "nope.json", "context": 8192})
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertFalse(data["ok"])
+        self.assertIn("没有这个模型", data["notes"][0])
 
 
 if __name__ == "__main__":

@@ -30,6 +30,19 @@ M2/M3 加的（默认没人点就什么都不发生，读接口不写任何文�
     POST /neo/connect          把一个 provider 写进 agent 的配置文件（先备份 .neo-bak）
     GET  /neo/wizard           安装向导现状（缺什么、建议的源、命令、日志尾部）
     POST /neo/wizard           跑 setup.py（后台线程，输出进 neo/state/logs/wizard.log）
+
+模型页与模型设置页加的（读接口不写文件；写只写 neo/state/configs/）：
+
+    GET  /neo/upstream?what=models|status|metrics
+                               替页面问上游那三个只读端点，key 留在 Neo 手里
+                               （页面在 8083，直接 fetch 8080 的面板端点读不到）
+    GET  /neo/remote           远程加载那一屏：NEO_SERVER_URL / NEO_API_KEY + 每个
+                               agent 的一行命令（key 只给掩码）
+    GET  /neo/model/settings?model=ID
+                               这个模型的上下文 / KV / 图片 / 显存保留 + 可选项 +
+                               显存估算 + 有没有覆盖配置 + 要不要重启
+    POST /neo/model/settings   写覆盖配置 neo/state/configs/strata-<id>.neo.json
+                               （上游 strata-*.json 不动）；{"action":"reset"} 删掉它
 """
 
 from __future__ import annotations
@@ -53,6 +66,17 @@ WEB_DIR = paths.web_dir()
 STATIC_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                 ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+#: 远程加载那一行里的 token 占位符：完整 key 从不进页面（明文只走 /neo/token 的本机请求）
+KEY_PLACEHOLDER = "sk-neo-…（点「取 token」换上真的那把）"
+
+
+def _query_value(path: str, key: str) -> str:
+    """查询串里的那个值（?model=… / ?what=…）。没有回空串。"""
+    prefix = key + "="
+    for part in urlsplit(path).query.split("&"):
+        if part.startswith(prefix):
+            return unquote(part[len(prefix):])
+    return ""
 
 
 def neo_console_info(port: int, timeout: float = 0.8) -> dict | None:
@@ -174,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         sup = self.server.supervisor
         if path in ("/", "/index.html"):
             self._static("index.html")
-        elif path in ("/app.js", "/style.css", "/icon.svg"):
+        elif path in ("/app.js", "/i18n.js", "/style.css", "/icon.svg"):
             self._static(path.lstrip("/"))
         elif path == "/neo/status":
             self._json(200, sup.status())
@@ -207,6 +231,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/neo/catalog":
             self._json(200, self.server.model_catalog(
                 fresh="fresh=1" in urlsplit(self.path).query))
+        elif path == "/neo/upstream":
+            self._json(200, self.server.upstream(_query_value(self.path, "what")))
+        elif path == "/neo/model/settings":
+            self._json(200, self.server.model_settings_view(
+                _query_value(self.path, "model")))
+        elif path == "/neo/remote":
+            self._json(200, self.server.remote_info())
         else:
             self._json(404, {"error": "not found"})
 
@@ -244,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, self.server.model_install(body))
         elif path == "/neo/source":
             self._json(200, self.server.model_source(body))
+        elif path == "/neo/model/settings":
+            self._json(200, self.server.model_settings_apply(body))
         elif path in ("/neo/open", "/neo/open-log"):
             self._shell_action("open_page" if path == "/neo/open" else "open_log", body)
         else:
@@ -336,6 +369,10 @@ class ConsoleServer:
         httpd.model_catalog = self.model_catalog
         httpd.model_install = self.model_install
         httpd.model_source = self.model_source
+        httpd.upstream = self.upstream
+        httpd.remote_info = self.remote_info
+        httpd.model_settings_view = self.model_settings_view
+        httpd.model_settings_apply = self.model_settings_apply
         httpd.shell = self.shell
         self.httpd = httpd
         self.port = httpd.server_address[1]
@@ -538,6 +575,89 @@ class ConsoleServer:
                     "choices": list(models.SOURCE_KEYS)}
         models.save_source_choice(source)
         return {"ok": True, **models.source_info()}
+
+    # ---- 模型页：在跑的服务（代理上游）与远程加载 ----
+    #: 页面能借 Neo 问上游的那几个只读端点（写的一律不代理）
+    UPSTREAM_PATHS = {"models": "/v1/models", "status": "/status", "metrics": "/metrics"}
+
+    def upstream(self, what: str = "models") -> dict:
+        """替页面问上游一句只读的话，key 留在 Neo 手里。
+
+        为什么要在 Neo 这一层代发：页面开在 8083，直接 fetch 8080 的 /status 读不到 ——
+        serve/server.py 只给 /v1/* 发 Access-Control-Allow-Origin，面板那几个端点
+        （/status、/metrics）不发（serve/test_server.py:3195 守着这条）。由 Neo 发就是
+        本机 loopback 的请求、Host 是服务认的那个名字，正好是它认的"这台机器自己的面板"。
+        """
+        from . import tokens
+        from .engines.base import http_json
+        path = self.UPSTREAM_PATHS.get(str(what or "models"))
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        if path is None:
+            return {"ok": False, "base": base, "data": {},
+                    "error": f"只代理 {' / '.join(self.UPSTREAM_PATHS)}，别的不代发"}
+        data = http_json(self.supervisor.port, path, api_key=str(self.supervisor.api_key or ""))
+        if not isinstance(data, dict):
+            return {"ok": False, "base": base, "path": path, "data": {},
+                    "error": "上游没答：服务没起来，或者它要 key 而 Neo 没有"}
+        return {"ok": True, "base": base, "path": path, "data": data}
+
+    def remote_info(self) -> dict:
+        """远程加载那一屏：两个变量 + 每个 agent 的一行命令。
+
+        与 neo/start.py 的远程形态同一对变量（neo/start.py:13-16）：设了
+        NEO_SERVER_URL 与 NEO_API_KEY，`neo start <agent>` 连的就是那台 Strata，
+        本机这台不动。完整 key 不在这里出现（页面上要明文走 /neo/token 的本机请求）。
+        """
+        from . import connectors, start, tokens
+        key = str(self.supervisor.api_key or "")
+        base = tokens.base_for(self.supervisor.host, self.supervisor.port)
+        rows = []
+        for name in connectors.AGENTS:
+            quick = start.quick_command(self.root_dir(), name)
+            rows.append({
+                "agent": name,
+                "title": connectors.TITLES[name],
+                "quick": quick,
+                "windows": f'set "NEO_SERVER_URL={base}" && set "NEO_API_KEY={KEY_PLACEHOLDER}"'
+                           f" && {quick}",
+                "posix": f'NEO_SERVER_URL={base} NEO_API_KEY={KEY_PLACEHOLDER} {quick}',
+            })
+        return {"base": base,
+                "bases": [base] + (tokens.lan_bases(self.supervisor.port)
+                                   if self.supervisor.host in ("0.0.0.0", "", "::") else []),
+                "has_api_key": bool(key), "api_key_masked": tokens.mask_of(key),
+                "env": ["NEO_SERVER_URL", "NEO_API_KEY"], "rows": rows,
+                "placeholder": KEY_PLACEHOLDER,
+                "note": "两个变量只管这一行命令：agent 连哪台由它说了算，Neo 这边不动"}
+
+    # ---- 模型设置页：上下文 / KV / 图片 / 显存保留 ----
+    def model_settings_view(self, model: str = "") -> dict:
+        from . import model_settings
+        st = self.supervisor.status()
+        return model_settings.view(self.root_dir(), str(model or st.get("model_id") or ""),
+                                   port=self.supervisor.port,
+                                   api_key=str(self.supervisor.api_key or ""),
+                                   running=self._service_busy(st))
+
+    def model_settings_apply(self, body: dict) -> dict:
+        from . import model_settings
+        st = self.supervisor.status()
+        model = str(body.get("model") or st.get("model_id") or "")
+        changes = {k: body[k] for k in model_settings.CHANGABLE_KEYS if k in body}
+        if str(body.get("action") or "") == "reset":
+            item = model_settings.find_config(self.root_dir(), model)
+            if item is None:
+                return {"ok": False, "notes": [f"没有这个模型：{model or '（没点名）'}"]}
+            return model_settings.clear(model, item["file"])
+        out = model_settings.apply(self.root_dir(), model, changes)
+        out["restart_required"] = bool(out.get("ok"))
+        return out
+
+    def _service_busy(self, st: dict) -> bool:
+        """服务此刻在不在跑（含别人启动的、启动中、停止中、自动重启中）—— 改了要重启的标记用。"""
+        return str(st.get("display_state") or st.get("state")) in (
+            "running", "starting", "restarting", "stopping", "external")
+
 
     def model_install(self, body: dict) -> dict:
         """装一个模型 = 后台跑 setup.py --family X --model Y，输出进 wizard.log。

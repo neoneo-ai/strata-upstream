@@ -761,7 +761,9 @@ python -m neo.build_exe --dest D:\Work\Strata
 
 - **不在部署树里提交任何东西**，也不给它的 `origin` 加第二个远端 —— 上游更新要能直接 `git pull`。
 - **Neo 不改上游文件**。Neo 带去的东西全是未跟踪的：`NeoStrata.exe`、`neo/`、`NEO-START.bat`。
-  部署时 `neo/deploy.py` 把这三条加上 `strata/`（引擎源码树）写进部署树的
+  部署时 `neo/deploy.py` 把这三条加上 `strata/`（引擎源码树）和 `strata-*.json.bak`（上游
+  `setup.py` 在用户机器上留下的模型配置备份 —— 上游的 `.gitignore` 只写到 `/strata-*.json`，
+  以 `.json` 结尾的模式匹配不到 `.json.bak`）写进部署树的
   `.git/info/exclude` —— 那是 git 的本地忽略文件，不在任何提交里，所以 `git status` 只看得到上游的
   东西，而 Neo 一个跟踪文件都没动（上游的 `.gitignore` 是跟踪文件，不碰）。
   2026-10-13 撤掉了先前打在 `serve/server.py` 上的本机豁免补丁（旧文件备份在
@@ -837,7 +839,7 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
 起真实进程，不需要 GPU、不需要装好的模型、不联网、不碰真实用户配置）。开销全在起真进程与建真 git 树的
 模块上，单独量的数：`test_supervisor` 56 秒、`test_console` 25.9 秒（模型设置那组每个用例起一台控制台）、
 `test_connect_api` 6.7 秒，
-其余十六个模块合起来 24.7 秒（408 个测试，2026-10-13 实测）——
+其余十六个模块合起来 26.4 秒（409 个测试，2026-10-13 实测）——
 日常开发跑那十六个就够（命令见 AGENTS.md）。合起来比各自相加慢，慢在哪也量了（2026-10-13，同一台机器）：
 `test_engine_setup` 与 `test_deploy` 各自单跑是 8.4 与 5.0 秒，在全量套件里是十几分钟 —— 它们每个用例在
 临时目录里 `git init` + 一次提交造真树，Windows Defender 扫临时目录时一次 `git init` 要几十秒。
@@ -980,10 +982,11 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   每个文件分 new / update / same；目标里多出来的文件要报出来）、进程（缺 exe 挡、在跑的实例挡）；
   dry-run 一个文件都不写；`--apply` 写完逐文件核对 SHA-256、闸门不过的树拒绝写、
   `--prune` 只删"源里没有的 Neo 文件"；`--json` 是 JSON 且说得出闸门过没过；报告里点名闸门与计数；
-  `--to` 不给就报错；pin 与目标树对不上时挡住报告。本地忽略那一笔（`.git/info/exclude`）钉五条：
+  `--to` 不给就报错；pin 与目标树对不上时挡住报告。本地忽略那一笔（`.git/info/exclude`）钉六条：
   缺的行一次补齐、第二次一个字节都不动（不重复）、dry-run 只报不写、目标不是 git 检出就说"没有可写的地方"、
-  补完的行让 `git check-ignore` 真把 `strata/` 认成忽略；`--apply` 那一条还核对了上游的 `.gitignore`
-  逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
+  补完的行让 `git check-ignore -v` 真把 `strata/` 与 `strata-q2_0.json.bak` 认成忽略（备份那条是上游
+  `setup.py` 写的文件，上游的 `.gitignore` 只到 `/strata-*.json`）；`--apply` 那一条还核对了上游的
+  `.gitignore` 逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
   和真控制台一样能 `reconfigure`），打印带 `U+FFFD` 的行 —— 不宽化就抛 `UnicodeEncodeError`，
   宽化后按 UTF-8 读回来是 `git : fatal: ...`。
 - `test_console` 里的 `TestEngineEndpoint`（4 个）：`GET /neo/engine` 回页面要读的 13 个键、

@@ -34,13 +34,18 @@ NEO_DIR_NAME = "neo"
 SKIP_DIRS = {"state", "__pycache__", "build", "dist"}
 #: 部署树里 Neo 的落点（AGENTS.md：exe + neo/ + NEO-START.bat，全 untracked）
 ALLOWED_TOP = (NEO_DIR_NAME, BAT_NAME, EXE_NAME)
-#: 部署树里要让 git 看不见的东西：Neo 自己的三样 + 向导 clone 出来的引擎源码树 strata/。
+#: 部署树里要让 git 看不见的东西：Neo 自己的三样 + 向导 clone 出来的引擎源码树 strata/
+#: + setup.py 在用户机器上留下的模型配置备份。
 #: 写进 .git/info/exclude（本地忽略，git 自己的机制），不改上游的 .gitignore ——
 #: 上游的 .gitignore 是跟踪文件，改它就等于改了部署树的跟踪文件，换版闸门（只看跟踪文件）
 #: 立刻永远不过，用户的 `git pull` 也会撞上它。
+#: 那两条 .bak 是上游 setup.py 自己写的备份（`write_setup_config`：改过一次就把旧文件留成
+#: `strata-<模型>.json.bak`）；上游的 .gitignore 有 `/strata-*.json` 与 `/strata-*.log`，
+#: 而以 `.json` 结尾的模式匹配不到 `.json.bak`，所以它们会露在 `git status` 里。
 EXCLUDE_LINES = (f"/{NEO_DIR_NAME}/", f"/{BAT_NAME}", f"/{EXE_NAME}",
-                 f"/{paths.ENGINE_DIR_NAME}/")
-EXCLUDE_MARK = "# Neo（neo/deploy.py 写的）：Neo 的文件与引擎源码树，本地忽略，不动上游的 .gitignore"
+                 f"/{paths.ENGINE_DIR_NAME}/", "/strata-*.json.bak")
+EXCLUDE_MARK = ("# Neo（neo/deploy.py 写的）：Neo 的文件、引擎源码树、setup.py 的配置备份，"
+                "本地忽略，不动上游的 .gitignore")
 #: 本地忽略文件在 git 里的固定位置（相对部署树根）
 EXCLUDE_NAME = ".git/info/exclude"
 QUICK_SUITE = ("test_start", "test_models", "test_ui", "test_tokens", "test_netprobe",

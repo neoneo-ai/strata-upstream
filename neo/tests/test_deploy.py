@@ -227,6 +227,11 @@ class TestPlan(unittest.TestCase):
         """strata/ 必须在里面：它是 clone 出来的，git 不该在部署树里看见它。"""
         self.assertIn(f"/{paths.ENGINE_DIR_NAME}/", deploy.EXCLUDE_LINES)
 
+    def test_the_local_ignore_lines_cover_the_setup_config_backups(self):
+        """setup.py 留下的 `strata-<模型>.json.bak` 也要忽略：上游的 .gitignore 只写到
+        `/strata-*.json`，以 `.json` 结尾的模式匹配不到 `.json.bak`。"""
+        self.assertIn("/strata-*.json.bak", deploy.EXCLUDE_LINES)
+
 
 class TestLocalIgnore(unittest.TestCase):
     """.git/info/exclude 那一笔：只追加、不重复、不碰上游的 .gitignore。"""
@@ -261,11 +266,14 @@ class TestLocalIgnore(unittest.TestCase):
 
     @NEEDS_GIT
     def test_the_ignored_dir_is_the_one_git_then_hides(self):
-        """补完的行真要让 git 看不见 strata/：用 git check-ignore 问它本人。"""
+        """补完的行真要让 git 看不见 strata/ 与 setup.py 的配置备份：问 git 本人（check-ignore）。"""
         deploy.apply_exclude(self.dst)
-        rc, _ = engine_setup.git_run(["git", "check-ignore", "-q", "--no-index",
-                                      "strata/setup.py"], cwd=self.dst)
-        self.assertEqual(rc, 0, "git 说 strata/ 没被忽略：那几行没写对")
+        write(self.dst / "strata-q2_0.json.bak", "{}\n")
+        for rel in (f"{paths.ENGINE_DIR_NAME}/setup.py", "strata-q2_0.json.bak"):
+            rc, out = engine_setup.git_run(["git", "check-ignore", "-v", "--no-index", rel],
+                                           cwd=self.dst)
+            self.assertEqual(rc, 0, f"git 说 {rel} 没被忽略：那几行没写对")
+            self.assertIn(deploy.EXCLUDE_NAME, out)
 
 
 class TestApply(unittest.TestCase):

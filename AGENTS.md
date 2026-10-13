@@ -49,7 +49,9 @@ Deploying into a Strata checkout goes through `python -m neo.deploy --to <tree>`
 engine HEAD equals the pin with tracked files clean - Neo's own files there are untracked by design, so the
 dirty check passes `--untracked-files=no`; only Neo's listed paths are written; a running `NeoStrata.exe`
 blocks the write), then `webcheck` and the quick suite run in the target tree. `--apply` also appends Neo's four
-paths (`/neo/`, `/NEO-START.bat`, `/NeoStrata.exe`, `/strata/`) to the target's `.git/info/exclude` - append-only,
+paths (`/neo/`, `/NEO-START.bat`, `/NeoStrata.exe`, `/strata/`, `/strata-*.json.bak` - the last one covers
+upstream `setup.py`'s own `strata-<model>.json.bak` config backups, which upstream's `.gitignore` misses because
+a pattern ending in `.json` cannot match `.json.bak`) to the target's `.git/info/exclude` - append-only,
 never to the tracked upstream `.gitignore`, dry-run only reports - so `git status` there shows only upstream
 files. `neo/deploy.py` and `neo/engine_setup.py` widen stdout to UTF-8 (`wide_stdout()`) before printing: git
 output decoded as UTF-8 carries `U+FFFD`, which a cp936 console cannot encode (the `--ensure` CLI crashed on it
@@ -72,7 +74,7 @@ sixteen modules that start no processes and leave the three out:
 neo.tests.test_netprobe neo.tests.test_wizard neo.tests.test_connectors neo.tests.test_engines
 neo.tests.test_manager_cli neo.tests.test_upstream_api neo.tests.test_connect_cli
 neo.tests.test_logging neo.tests.test_model_settings neo.tests.test_paths neo.tests.test_engine_setup
-neo.tests.test_deploy` (24.7 s, 408 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
+neo.tests.test_deploy` (26.4 s, 409 tests, measured 2026-10-13; 15.6 s / 326 tests on the earlier
 thirteen-module run). `test_engine_setup` and `test_deploy` build real git trees in temp dirs (git init + one
 commit per case), which is why the full 19-module run is 17.6 minutes while those two alone measure 8.4 s and
 5.0 s - run the quick pass while developing, the full pass before a deploy. `python -m neo.webcheck` checks the page

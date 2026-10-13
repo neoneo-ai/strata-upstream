@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -620,6 +621,57 @@ class TestEngineEndpoint(unittest.TestCase):
         self.assertIn('path == "/neo/engine"', src)
         self.assertIn("self.server.engine_status()", src)
         self.assertIn("self.server.engine_run(body)", src)
+
+    def test_every_endpoint_the_handler_calls_is_attached_in_start(self):
+        """Handler 里 `self.server.X(...)` 用到的每个名字，start() 都得挂到 httpd 上。
+
+        少挂一个就是 2026-10-13 那次：引擎卡的请求得到的是 "Empty reply from server" ——
+        AttributeError 在 socketserver 的 handle_error 里被吞掉，连接关掉，页面只看到 fetch 失败。
+        以前的测试直接调 console.engine_status()，绕开了 httpd，所以没人管这件事。
+        """
+        src = (ROOT / "neo" / "console_server.py").read_text(encoding="utf-8")
+        used = set(re.findall(r"self\.server\.([a-z_]+)\(", src))
+        start = src[src.index("    def start(self) -> str:"):]
+        start = start[:start.index("    def stop(self)")]
+        attached = set(re.findall(r"httpd\.([a-z_]+) *=", start))
+        missing = sorted(used - attached)
+        self.assertEqual([], missing,
+                         f"Handler 调用 self.server.{missing}，start() 没把它们挂到 httpd 上")
+
+    def test_the_engine_card_answers_over_http(self):
+        """真走一次 HTTP：GET /neo/engine 要答 200 与页面要读的那些键（不能只测方法本身）。
+
+        起控制台要重试几次：这台机器上跑测试时端口常被上一批测试的服务占着（`free_port()`
+        只保证那一刻没人用），`start()` 就报"控制台端口起不来"。
+        """
+        url = None
+        for _ in range(6):
+            self.console = ConsoleServer(self.sup, host="127.0.0.1", port=free_port())
+            try:
+                url = self.console.start()
+                break
+            except RuntimeError:
+                time.sleep(0.3)
+        self.assertIsNotNone(url, "六次都起不来控制台（端口被占）")
+        self.addCleanup(self.console.stop)
+        # 请求也要重试：这台机器上跑整套测试时（18 个模块一起跑，磁盘被 Defender 扫），
+        # 一次 GET 超过 req() 的 6 秒不算异常，客户端超时先断开、服务端就报 10053。
+        got = None
+        for _ in range(3):
+            try:
+                code, _h, body = req(url.rstrip("/") + "/neo/engine")
+                got = (code, body)
+                break
+            except (urllib.error.URLError, OSError) as exc:
+                got = exc
+                time.sleep(0.5)
+        self.assertIsInstance(got, tuple, f"三次都没答上来：{got}")
+        code, body = got
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertIn(data["state"], engine_setup.STATE_ACTION)
+        for key in ("clone_command", "steps", "ready", "run", "log_tail"):
+            self.assertIn(key, data, f"引擎卡要读 {key}")
 
     def test_an_unknown_action_is_refused(self):
         out = self.console.engine_run({"action": "delete"})

@@ -111,6 +111,10 @@ line per agent - `NeoStrata.exe start claude` (or `python -m neo.start claude` f
 which resolves the base URL, key, model id and context window, clears the cloud-account env vars, and launches the
 agent; `--no-launch` prints the paste block instead, `NEO_SERVER_URL` + `NEO_API_KEY` point it at a remote Strata.
 CLI: `python -m neo.wizard --check`, `python -m neo.connect list`, `python -m neo.start list`.
+Console endpoints are attached one by one: a `self.server.X(...)` call in `neo/console_server.py`'s Handler
+needs a matching `httpd.X = self.X` in `ConsoleServer.start()`, or the request dies inside socketserver's
+`handle_error` and the page only sees a dead fetch (`/neo/engine` was missing both 2026-10-13;
+`neo/tests/test_console.py` now guards the wiring list and does one real HTTP round trip).
 
 The server's key guards inference only: `serve/server.py`'s `_authorized(monitor=True)` lets the Monitor's
 read-only endpoints (`/metrics`, `/status`, `/slots`, `/props`, `/config`, `/settings`, `/mcp`, `/api/requests`,

@@ -449,6 +449,12 @@ class ConsoleServer:
         httpd.connect_write = self.connect_write
         httpd.wizard_status = self.wizard_status
         httpd.wizard_run = self.wizard_run
+        # 实测 2026-10-13：接入页的引擎卡一直转圈，curl 报 "Empty reply from server" ——
+        # Handler 调 self.server.engine_status() / engine_run()，而这里只挂了 wizard 那一批，
+        # 这两个没挂上：AttributeError 被 socketserver 的 handle_error 吞掉，连接直接关掉，
+        # 页面只看到 fetch 失败。加端点时这里必须一起加（neo/tests/test_console.py 钉着这条）。
+        httpd.engine_status = self.engine_status
+        httpd.engine_run = self.engine_run
         httpd.model_catalog = self.model_catalog
         httpd.model_install = self.model_install
         httpd.model_source = self.model_source

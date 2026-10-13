@@ -288,6 +288,13 @@ Neo 不替聊天页花用户的 token。
 `neo/tests/test_upstream_api.py` 反过来盯"Neo 不依赖上游补丁"——上游文件里不许出现豁免补丁的标记，
 而监控页与那些只读端点必须还在。
 
+加一个控制台端点的规矩：`Handler` 里写 `self.server.X(...)`，`ConsoleServer.start()` 就得有一行
+`httpd.X = self.X` —— httpd 才是 `self.server`，控制台的方法是一个一个挂上去的。挂漏了不会崩在页面上：
+AttributeError 被 socketserver 的 `handle_error` 吞掉，连接直接关掉，`curl` 只看到
+`Empty reply from server`，页面那边就是一直转圈（2026-10-13 的引擎卡：`/neo/engine` 两条都挂漏了）。
+`test_console.py` 现在钉两条：源码里 `self.server.X(` 用到的名字必须都在 `start()` 的挂载清单里，
+以及真走一次 HTTP 的 `GET /neo/engine`（只直接调方法测不到这件事）。
+
 ### 四个 agent 的配方（`neo/connectors.py`）
 
 | agent | 落点 | Neo 写的那一块 |
@@ -989,11 +996,16 @@ python -m unittest neo.tests.test_logging neo.tests.test_ui neo.tests.test_super
   `.gitignore` 逐字节不变。控制台打印一条：把 stdout 换成 cp936 的字节流（`BytesIO` + `TextIOWrapper`，
   和真控制台一样能 `reconfigure`），打印带 `U+FFFD` 的行 —— 不宽化就抛 `UnicodeEncodeError`，
   宽化后按 UTF-8 读回来是 `git : fatal: ...`。
-- `test_console` 里的 `TestEngineEndpoint`（4 个）：`GET /neo/engine` 回页面要读的 13 个键、
+- `test_console` 里的 `TestEngineEndpoint`（6 个）：`GET /neo/engine` 回页面要读的 13 个键、
   三步的名字、两条路由接在 `console_server.py` 里、认不得的 action 挡回来、
   `install` 走后台线程（`wait=False`，点一下不能把请求线程堵几十分钟）且 `setup=True`
   （取完源码交给 `setup.py`，Neo 不自己装）、host 与 key 从监督器传下去。netprobe 与
   `run_engine` 都换成假的 —— 一次 443 都不连、一次 clone 都不跑。
+  2026-10-13 补的两条钉住"接线"本身：`start()` 必须把 Handler 里 `self.server.X(...)` 用到的
+  每个名字都挂到 httpd 上（少挂一个，socketserver 把异常吞在 `handle_error` 里，连接直接关掉，
+  页面只看到 fetch 失败 —— 引擎卡当时就是转圈不动，`curl` 报 `Empty reply from server`），
+  以及 **真走一次 HTTP** 的 `GET /neo/engine`（以前只直接调 `console.engine_status()`，绕开了
+  httpd，所以挂漏没人响）。
 - `test_manager_cli`（12 个）：三个开关都不给 = 老默认（`127.0.0.1`、无 key、不打印）；`--lan` 绑
   `0.0.0.0`、`--host` 压过 `--lan`、命令行压过 `launcher.json`；`--token` 现生成一把并打印全串、
   落进 `launcher.json`、**不进 `manager.log`**，已有 key 时不再生成也不打印；端口优先级
